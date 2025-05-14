@@ -213,7 +213,7 @@ impl Content {
             }
             SNAKE => {
                 // 蛇身：游戏结束
-                return STATE_GAME_OVER;
+                STATE_GAME_OVER
             }
             _ => {
                 panic!("Invalid cell value");
