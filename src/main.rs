@@ -172,10 +172,11 @@ impl Content {
             x: (head_position.x + self.current_dir.x),
             y: (head_position.y + self.current_dir.y),
         };
-        if new_head_position.x >= SIDE_LENGTH as i8 || new_head_position.x < 0 {
-            return STATE_GAME_OVER;
-        }
-        if new_head_position.y >= SIDE_LENGTH as i8 || new_head_position.y < 0 {
+        if new_head_position.x >= SIDE_LENGTH as i8
+            || new_head_position.x < 0
+            || new_head_position.y >= SIDE_LENGTH as i8
+            || new_head_position.y < 0
+        {
             return STATE_GAME_OVER;
         }
 
