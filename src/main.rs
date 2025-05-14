@@ -3,9 +3,9 @@ const MAP_SIZE: usize = SIDE_LENGTH * SIDE_LENGTH;
 
 const NONE: Position = Position { x: 0, y: 0 };
 const RIGHT: Position = Position { x: 1, y: 0 };
-const UP: Position = Position { x: 0, y: 1 };
+const UP: Position = Position { x: 0, y: -1 };
 const LEFT: Position = Position { x: -1, y: 0 };
-const DOWN: Position = Position { x: 0, y: -1 };
+const DOWN: Position = Position { x: 0, y: 1 };
 
 const EMPTY: u8 = 0;
 const SNAKE: u8 = 1;
@@ -157,7 +157,8 @@ impl Content {
 
         if self.current_dir != NONE {
             // 计算新的蛇头位置
-            let head_position = self.snake.positions_queue[self.snake.tail_index];
+            let head_position = self.snake.positions_queue
+                [(self.snake.tail_index + self.snake.length - 1) % MAP_SIZE];
             let new_head_position = Position {
                 x: (head_position.x + self.current_dir.x),
                 y: (head_position.y + self.current_dir.y),
@@ -207,7 +208,14 @@ impl Content {
     }
 
     fn print_board(&self) {
+        print!("\x1B[2J\x1B[1;1H");
+        println!("{}", "-".repeat(SIDE_LENGTH + 2));
+
         for i in 0..MAP_SIZE {
+            if i % SIDE_LENGTH == 0 {
+                print!("|");
+            }
+
             let ch = match self.map[i] {
                 EMPTY => ' ',
                 SNAKE => '#',
@@ -215,10 +223,13 @@ impl Content {
                 _ => panic!("Invalid cell value"),
             };
             print!("{}", ch);
+
             if (i + 1) % SIDE_LENGTH == 0 {
-                println!();
+                println!("|");
             }
         }
+
+        println!("{}", "-".repeat(SIDE_LENGTH + 2));
     }
 }
 
@@ -235,7 +246,8 @@ fn main() -> std::io::Result<()> {
 
         let direction = {
             let mut dir = NONE;
-            if crossterm::event::poll(std::time::Duration::from_millis(500)).unwrap_or(false) {
+            // 仅在超时前读取一次按键
+            if crossterm::event::poll(std::time::Duration::from_millis(100)).unwrap_or(false) {
                 if let Ok(crossterm::event::Event::Key(key_event)) = crossterm::event::read() {
                     use crossterm::event::KeyCode;
                     dir = match key_event.code {
@@ -247,7 +259,7 @@ fn main() -> std::io::Result<()> {
                     };
                 }
             }
-            dir
+            dir // 每帧仅读取一次方向
         };
 
         if !content.update(direction) {
