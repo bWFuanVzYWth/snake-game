@@ -11,6 +11,10 @@ const EMPTY: u8 = 0;
 const SNAKE: u8 = 1;
 const FOOD: u8 = 2;
 
+const STATE_GAME_OVER: u8 = 0;
+const STATE_READY: u8 = 1;
+const STATE_GO: u8 = 2;
+
 #[derive(Copy, Clone, Default, PartialEq)]
 struct Position {
     x: i8,
@@ -92,11 +96,6 @@ impl Empty {
     }
 
     fn push(&mut self, _position: Position, pos_index: usize) {
-        // 当地图已满时直接返回
-        if self.length >= MAP_SIZE {
-            return;
-        }
-
         // 维护空格坐标索引
         self.positions_indices[pos_index] = self.length;
 
@@ -109,10 +108,10 @@ impl Empty {
 }
 
 struct Content {
-    current_dir: Position, // 蛇当前方向
+    current_dir: Position, // 记住前进方向
     map: [u8; MAP_SIZE],   // 地图
-    snake: Snake,
-    empty: Empty,
+    snake: Snake,          // 移动相关的数据结构
+    empty: Empty,          // 食物生成相关的数据结构
 }
 
 impl Default for Content {
@@ -157,69 +156,68 @@ impl Content {
         self.generate_food();
     }
 
-    fn update(&mut self, direction: Position) -> bool {
+    fn update(&mut self, direction: Position) -> u8 {
         if direction != NONE {
             self.current_dir = direction;
         }
 
-        if self.current_dir != NONE {
-            // 计算新的蛇头位置
-            let head_position = self.snake.positions_queue
-                [(self.snake.tail_index + self.snake.length - 1) % MAP_SIZE];
-            let new_head_position = Position {
-                x: (head_position.x + self.current_dir.x),
-                y: (head_position.y + self.current_dir.y),
-            };
-
-            // 预计算索引
-            let new_head_index = new_head_position.as_index();
-
-            // 静态地图边界检查（不可省略）
-            if new_head_position.x >= SIDE_LENGTH as i8 || new_head_position.x < 0 {
-                return false;
-            }
-            if new_head_position.y >= SIDE_LENGTH as i8 || new_head_position.y < 0 {
-                return false;
-            }
-
-            match self.map[new_head_index] {
-                EMPTY => {
-                    // 空位：蛇头前进一格，蛇尾收缩一格
-                    self.map[new_head_index] = SNAKE;
-                    self.snake.push(new_head_position);
-                    self.empty.pop(new_head_position, new_head_index);
-
-                    let tail_position = self.snake.pop();
-                    let tail_index = tail_position.as_index();
-                    self.map[tail_index] = EMPTY;
-                    self.empty.push(tail_position, tail_index);
-
-                    return true;
-                }
-                FOOD => {
-                    // 检查是否还有空间生成食物
-                    if self.empty.length == 0 {
-                        return false;
-                    }
-
-                    // 食物：蛇头前进一格，生成新的食物
-                    self.map[new_head_index] = SNAKE;
-                    self.snake.push(new_head_position);
-                    self.empty.pop(new_head_position, new_head_index);
-                    self.generate_food();
-                    return true;
-                }
-                SNAKE => {
-                    // 蛇身：游戏结束
-                    return false;
-                }
-                _ => {
-                    panic!("Invalid cell value");
-                }
-            }
+        if self.current_dir == NONE {
+            return STATE_READY;
         }
 
-        true
+        // 计算新的蛇头位置
+        let head_position =
+            self.snake.positions_queue[(self.snake.tail_index + self.snake.length - 1) % MAP_SIZE];
+        let new_head_position = Position {
+            x: (head_position.x + self.current_dir.x),
+            y: (head_position.y + self.current_dir.y),
+        };
+        if new_head_position.x >= SIDE_LENGTH as i8 || new_head_position.x < 0 {
+            return STATE_GAME_OVER;
+        }
+        if new_head_position.y >= SIDE_LENGTH as i8 || new_head_position.y < 0 {
+            return STATE_GAME_OVER;
+        }
+
+        // 预计算索引
+        let new_head_index = new_head_position.as_index();
+
+        match self.map[new_head_index] {
+            EMPTY => {
+                // 空位：蛇头前进一格，蛇尾收缩一格
+                self.map[new_head_index] = SNAKE;
+                self.snake.push(new_head_position);
+                self.empty.pop(new_head_position, new_head_index);
+
+                let tail_position = self.snake.pop();
+                let tail_index = tail_position.as_index();
+                self.map[tail_index] = EMPTY;
+                self.empty.push(tail_position, tail_index);
+
+                STATE_GO
+            }
+            FOOD => {
+                // 检查是否还有空间生成食物
+                if self.empty.length == 0 {
+                    return STATE_GAME_OVER;
+                }
+
+                // 食物：蛇头前进一格，生成新的食物
+                self.map[new_head_index] = SNAKE;
+                self.snake.push(new_head_position);
+                self.empty.pop(new_head_position, new_head_index);
+                self.generate_food();
+
+                STATE_GO
+            }
+            SNAKE => {
+                // 蛇身：游戏结束
+                return STATE_GAME_OVER;
+            }
+            _ => {
+                panic!("Invalid cell value");
+            }
+        }
     }
 
     fn print_board(&self) {
@@ -287,11 +285,17 @@ fn main() -> std::io::Result<()> {
             dir
         };
 
-        if !content.update(direction) {
-            break;
+        match content.update(direction) {
+            STATE_GAME_OVER => {
+                break;
+            }
+            STATE_READY => {}
+            STATE_GO => {
+                moves_count += 1;
+            }
+            _ => panic!("Invalid Game State!"),
         }
 
-        moves_count += 1;
         content.print_board();
 
         // 固定时间休眠
@@ -301,5 +305,6 @@ fn main() -> std::io::Result<()> {
     println!("Game over after {moves_count} moves");
 
     crossterm::terminal::disable_raw_mode()?;
+
     Ok(())
 }
