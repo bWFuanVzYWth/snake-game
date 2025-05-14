@@ -251,10 +251,10 @@ fn main() -> std::io::Result<()> {
             moves_count += 1;
             last_update = now; // 严格固定更新间隔
 
-            // 每次更新前读取方向
+            // 优化后的方向读取逻辑
             let direction = {
                 let mut dir = NONE;
-                while crossterm::event::poll(std::time::Duration::from_millis(0)).unwrap_or(false) {
+                while crossterm::event::poll(std::time::Duration::from_millis(0))? {
                     if let Ok(crossterm::event::Event::Key(key_event)) = crossterm::event::read() {
                         use crossterm::event::KeyCode;
                         dir = match key_event.code {
@@ -275,8 +275,13 @@ fn main() -> std::io::Result<()> {
 
             content.print_board();
         } else {
-            // 短暂休眠避免CPU过载
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            // 优化后的休眠逻辑
+            let remaining = std::time::Duration::from_millis(500).saturating_sub(elapsed);
+            if remaining > std::time::Duration::from_millis(10) {
+                std::thread::sleep(remaining - std::time::Duration::from_millis(5));
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
         }
     }
 
