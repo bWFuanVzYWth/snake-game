@@ -1,11 +1,11 @@
 const SIDE_LENGTH: usize = 16;
 const MAP_SIZE: usize = SIDE_LENGTH * SIDE_LENGTH;
 
-const PAUSE: Position = Position { x: 0, y: 0 };
+const NONE: Position = Position { x: 0, y: 0 };
 const RIGHT: Position = Position { x: 1, y: 0 };
 const UP: Position = Position { x: 0, y: 1 };
-const LEFT: Position = Position { x: u8::MAX, y: 0 };
-const DOWN: Position = Position { x: 0, y: u8::MAX };
+const LEFT: Position = Position { x: -1, y: 0 };
+const DOWN: Position = Position { x: 0, y: -1 };
 
 const EMPTY: u8 = 0;
 const SNAKE: u8 = 1;
@@ -13,15 +13,15 @@ const FOOD: u8 = 2;
 
 #[derive(Copy, Clone, Default, PartialEq)]
 struct Position {
-    x: u8,
-    y: u8,
+    x: i8,
+    y: i8,
 }
 
 impl Position {
     pub const fn from_index(index: usize) -> Self {
         Self {
-            x: (index % SIDE_LENGTH) as u8,
-            y: (index / SIDE_LENGTH) as u8,
+            x: (index % SIDE_LENGTH) as i8,
+            y: (index / SIDE_LENGTH) as i8,
         }
     }
 
@@ -31,48 +31,48 @@ impl Position {
 }
 
 struct Snake {
-    snake_tail_index: usize,                     // 蛇尾坐标索引
-    snake_length: usize,                         // 蛇的长度
-    snake_positions_queue: [Position; MAP_SIZE], // 蛇坐标队列，仅`snake_length`个连续元素有效
+    tail_index: usize,                     // 蛇尾坐标索引
+    length: usize,                         // 蛇的长度
+    positions_queue: [Position; MAP_SIZE], // 蛇坐标队列，仅`snake_length`个连续元素有效
 }
 
 impl Default for Snake {
     fn default() -> Self {
         Self {
-            snake_tail_index: 0,
-            snake_length: 0,
-            snake_positions_queue: [Position::default(); MAP_SIZE],
+            tail_index: 0,
+            length: 0,
+            positions_queue: [Position::default(); MAP_SIZE],
         }
     }
 }
 
 impl Snake {
     fn push(&mut self, position: Position) {
-        let snake_head_index = (self.snake_tail_index + self.snake_length) % MAP_SIZE;
-        self.snake_positions_queue[snake_head_index] = position;
-        self.snake_length += 1;
+        let head_index = (self.tail_index + self.length) % MAP_SIZE;
+        self.positions_queue[head_index] = position;
+        self.length += 1;
     }
 
     fn pop(&mut self) -> Position {
-        let position = self.snake_positions_queue[self.snake_tail_index];
-        self.snake_length -= 1;
-        self.snake_tail_index = (self.snake_tail_index + 1) % MAP_SIZE;
+        let position = self.positions_queue[self.tail_index];
+        self.length -= 1;
+        self.tail_index = (self.tail_index + 1) % MAP_SIZE;
         position
     }
 }
 
 struct Empty {
-    empty_length: usize,                        // 空格坐标长度
-    empty_positions: [Position; MAP_SIZE],      // 空格坐标，仅前`empty_length`个有效
-    empty_positions_indices: [usize; MAP_SIZE], // 空格坐标索引，仅当对应坐标是空格时才有效
+    length: usize,                        // 空格坐标长度
+    positions_set: [Position; MAP_SIZE],  // 空格坐标，仅前`empty_length`个有效
+    positions_indices: [usize; MAP_SIZE], // 空格坐标索引，仅当对应坐标是空格时才有效
 }
 
 impl Default for Empty {
     fn default() -> Self {
         Self {
-            empty_length: 0,
-            empty_positions: std::array::from_fn(Position::from_index),
-            empty_positions_indices: std::array::from_fn(|i| i),
+            length: MAP_SIZE,
+            positions_set: std::array::from_fn(Position::from_index),
+            positions_indices: std::array::from_fn(|i| i),
         }
     }
 }
@@ -80,26 +80,26 @@ impl Default for Empty {
 impl Empty {
     fn pop(&mut self, position: Position) {
         // 维护空格坐标长度
-        self.empty_length -= 1;
+        self.length -= 1;
 
         // 把待删除的空格坐标替换为最后一个空格坐标
-        let remove_index = self.empty_positions_indices[position.as_index()];
-        let last_empty_position = self.empty_positions[self.empty_length];
-        self.empty_positions[remove_index] = last_empty_position;
+        let remove_index = self.positions_indices[position.as_index()];
+        let last_empty_position = self.positions_set[self.length];
+        self.positions_set[remove_index] = last_empty_position;
 
         // 维护空格坐标索引
-        self.empty_positions_indices[last_empty_position.as_index()] = remove_index;
+        self.positions_indices[last_empty_position.as_index()] = remove_index;
     }
 
     fn push(&mut self, position: Position) {
         // 维护空格坐标索引
-        self.empty_positions_indices[position.as_index()] = self.empty_length;
+        self.positions_indices[position.as_index()] = self.length;
 
         // 在列表最后插入新的空格坐标
-        self.empty_positions[self.empty_length] = position;
+        self.positions_set[self.length] = position;
 
         // 维护空格坐标长度
-        self.empty_length += 1;
+        self.length += 1;
     }
 }
 
@@ -113,7 +113,7 @@ struct Content {
 impl Default for Content {
     fn default() -> Self {
         Self {
-            current_dir: PAUSE,
+            current_dir: NONE,
             map: [0; MAP_SIZE],
             empty: Empty::default(),
             snake: Snake::default(),
@@ -122,54 +122,120 @@ impl Default for Content {
 }
 
 impl Content {
+    fn food_position(&self) -> Position {
+        let mut rng = rand::rng();
+        let index = rand::Rng::random_range(&mut rng, 0..self.empty.length);
+        self.empty.positions_set[index]
+    }
+
+    fn generate_food(&mut self) {
+        let food_position = self.food_position();
+        self.map[food_position.as_index()] = FOOD;
+    }
+
     // 生成初始的蛇与食物
     fn init(&mut self) {
         let snake_position = Position {
-            x: (SIDE_LENGTH / 2) as u8,
-            y: (SIDE_LENGTH / 2) as u8,
+            x: (SIDE_LENGTH / 2) as i8,
+            y: (SIDE_LENGTH / 2) as i8,
         };
 
         self.map[snake_position.as_index()] = 1;
         self.snake.push(snake_position);
         self.empty.pop(snake_position);
 
-        // TODO 生成食物
+        self.generate_food();
     }
 
     fn update(&mut self, direction: Position) -> bool {
-        if direction != PAUSE {
+        if direction != NONE {
             self.current_dir = direction;
         }
 
-        if self.current_dir != PAUSE {
-            // 蛇前进
-            let snake_head_position = self.snake.snake_positions_queue[self.snake.snake_tail_index];
-            let new_snake_head_position = Position {
-                x: (snake_head_position.x + self.current_dir.x) % SIDE_LENGTH as u8,
-                y: (snake_head_position.y + self.current_dir.y) % SIDE_LENGTH as u8,
+        if self.current_dir != NONE {
+            // 计算新的蛇头位置
+            let head_position = self.snake.positions_queue[self.snake.tail_index];
+            let new_head_position = Position {
+                x: (head_position.x + self.current_dir.x),
+                y: (head_position.y + self.current_dir.y),
             };
 
-            // TODO 检查蛇是否越界
+            // 检查蛇是否越界
+            if new_head_position.x > SIDE_LENGTH as i8
+                || new_head_position.y > SIDE_LENGTH as i8
+                || new_head_position.x < 0
+                || new_head_position.y < 0
+            {
+                return false;
+            }
 
-            match self.map[new_snake_head_position.as_index()] {
+            match self.map[new_head_position.as_index()] {
                 EMPTY => {
-                    // TODO 蛇前进
+                    // 蛇头前进一格，蛇尾收缩一格
+                    self.map[new_head_position.as_index()] = SNAKE;
+                    self.snake.push(new_head_position);
+                    self.empty.pop(new_head_position);
+
+                    let tail_position = self.snake.pop();
+                    self.map[tail_position.as_index()] = EMPTY;
+                    self.empty.push(tail_position);
+
+                    return true;
                 }
                 FOOD => {
-                    // TODO 蛇前进，并生成新的食物
+                    // 蛇头前进一格，生成新的食物
+                    self.map[new_head_position.as_index()] = SNAKE;
+                    self.snake.push(new_head_position);
+                    self.generate_food();
+                    return true;
                 }
                 _ => {
-                    // TODO 蛇死亡
+                    // 游戏结束
+                    return false;
                 }
             }
         }
+
         true
     }
 }
 
-fn main() {
+fn main() -> std::io::Result<()> {
+    crossterm::terminal::enable_raw_mode()?;
+
     let mut content = Content::default();
-    let mut step: usize = 0;
+    let mut moves_count: usize = 0;
 
     content.init();
+
+    // TODO 控制台输出
+
+    loop {
+        moves_count += 1;
+
+        if crossterm::event::poll(std::time::Duration::from_millis(500))? {
+            let direction =
+                if let crossterm::event::Event::Key(key_event) = crossterm::event::read()? {
+                    use crossterm::event::KeyCode;
+                    match key_event.code {
+                        KeyCode::Up => UP,
+                        KeyCode::Down => DOWN,
+                        KeyCode::Left => LEFT,
+                        KeyCode::Right => RIGHT,
+                        _ => NONE,
+                    }
+                } else {
+                    NONE
+                };
+
+            if !content.update(direction) {
+                break;
+            }
+        }
+    }
+
+    println!("Game over after {moves_count} moves");
+
+    crossterm::terminal::disable_raw_mode()?;
+    Ok(())
 }
