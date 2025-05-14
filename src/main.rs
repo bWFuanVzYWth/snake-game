@@ -92,6 +92,8 @@ impl Empty {
     }
 
     fn push(&mut self, position: Position) {
+        assert!(self.length < MAP_SIZE, "Snake length exceeds map size");
+
         // 维护空格坐标索引
         self.positions_indices[position.as_index()] = self.length;
 
@@ -131,6 +133,7 @@ impl Content {
     fn generate_food(&mut self) {
         let food_position = self.food_position();
         self.map[food_position.as_index()] = FOOD;
+        self.empty.pop(food_position);
     }
 
     // 生成初始的蛇与食物
@@ -161,8 +164,8 @@ impl Content {
             };
 
             // 检查蛇是否越界
-            if new_head_position.x > SIDE_LENGTH as i8
-                || new_head_position.y > SIDE_LENGTH as i8
+            if new_head_position.x >= SIDE_LENGTH as i8
+                || new_head_position.y >= SIDE_LENGTH as i8
                 || new_head_position.x < 0
                 || new_head_position.y < 0
             {
@@ -171,7 +174,7 @@ impl Content {
 
             match self.map[new_head_position.as_index()] {
                 EMPTY => {
-                    // 蛇头前进一格，蛇尾收缩一格
+                    // 空位：蛇头前进一格，蛇尾收缩一格
                     self.map[new_head_position.as_index()] = SNAKE;
                     self.snake.push(new_head_position);
                     self.empty.pop(new_head_position);
@@ -183,55 +186,75 @@ impl Content {
                     return true;
                 }
                 FOOD => {
-                    // 蛇头前进一格，生成新的食物
+                    // 食物：蛇头前进一格，生成新的食物
                     self.map[new_head_position.as_index()] = SNAKE;
                     self.snake.push(new_head_position);
+                    self.empty.pop(new_head_position);
                     self.generate_food();
                     return true;
                 }
-                _ => {
-                    // 游戏结束
+                SNAKE => {
+                    // 蛇身：游戏结束
                     return false;
+                }
+                _ => {
+                    panic!("Invalid cell value");
                 }
             }
         }
 
         true
     }
+
+    fn print_board(&self) {
+        for i in 0..MAP_SIZE {
+            let ch = match self.map[i] {
+                EMPTY => ' ',
+                SNAKE => '#',
+                FOOD => 'F',
+                _ => panic!("Invalid cell value"),
+            };
+            print!("{}", ch);
+            if (i + 1) % SIDE_LENGTH == 0 {
+                println!();
+            }
+        }
+    }
 }
 
 fn main() -> std::io::Result<()> {
     crossterm::terminal::enable_raw_mode()?;
-
     let mut content = Content::default();
     let mut moves_count: usize = 0;
 
     content.init();
-
-    // TODO 控制台输出
+    content.print_board(); // 初始打印
 
     loop {
         moves_count += 1;
 
-        if crossterm::event::poll(std::time::Duration::from_millis(500))? {
-            let direction =
-                if let crossterm::event::Event::Key(key_event) = crossterm::event::read()? {
+        let direction = {
+            let mut dir = NONE;
+            if crossterm::event::poll(std::time::Duration::from_millis(500)).unwrap_or(false) {
+                if let Ok(crossterm::event::Event::Key(key_event)) = crossterm::event::read() {
                     use crossterm::event::KeyCode;
-                    match key_event.code {
+                    dir = match key_event.code {
                         KeyCode::Up => UP,
                         KeyCode::Down => DOWN,
                         KeyCode::Left => LEFT,
                         KeyCode::Right => RIGHT,
                         _ => NONE,
-                    }
-                } else {
-                    NONE
-                };
-
-            if !content.update(direction) {
-                break;
+                    };
+                }
             }
+            dir
+        };
+
+        if !content.update(direction) {
+            break;
         }
+
+        content.print_board(); // 状态更新后打印
     }
 
     println!("Game over after {moves_count} moves");
