@@ -78,12 +78,12 @@ impl Default for Empty {
 }
 
 impl Empty {
-    fn pop(&mut self, position: Position) {
+    fn pop(&mut self, _position: Position, pos_index: usize) {
         // 维护空格坐标长度
         self.length -= 1;
 
         // 把待删除的空格坐标替换为最后一个空格坐标
-        let remove_index = self.positions_indices[position.as_index()];
+        let remove_index = self.positions_indices[pos_index];
         let last_empty_position = self.positions_set[self.length];
         self.positions_set[remove_index] = last_empty_position;
 
@@ -91,14 +91,17 @@ impl Empty {
         self.positions_indices[last_empty_position.as_index()] = remove_index;
     }
 
-    fn push(&mut self, position: Position) {
-        assert!(self.length < MAP_SIZE, "Snake length exceeds map size");
+    fn push(&mut self, _position: Position, pos_index: usize) {
+        // 当地图已满时直接返回
+        if self.length >= MAP_SIZE {
+            return;
+        }
 
         // 维护空格坐标索引
-        self.positions_indices[position.as_index()] = self.length;
+        self.positions_indices[pos_index] = self.length;
 
         // 在列表最后插入新的空格坐标
-        self.positions_set[self.length] = position;
+        self.positions_set[self.length] = _position;
 
         // 维护空格坐标长度
         self.length += 1;
@@ -132,8 +135,10 @@ impl Content {
 
     fn generate_food(&mut self) {
         let food_position = self.food_position();
-        self.map[food_position.as_index()] = FOOD;
-        self.empty.pop(food_position);
+        let food_index = food_position.as_index();
+
+        self.map[food_index] = FOOD;
+        self.empty.pop(food_position, food_index);
     }
 
     // 生成初始的蛇与食物
@@ -143,9 +148,11 @@ impl Content {
             y: (SIDE_LENGTH / 2) as i8,
         };
 
-        self.map[snake_position.as_index()] = 1;
+        let snake_index = snake_position.as_index();
+
+        self.map[snake_index] = 1;
         self.snake.push(snake_position);
-        self.empty.pop(snake_position);
+        self.empty.pop(snake_position, snake_index);
 
         self.generate_food();
     }
@@ -164,33 +171,41 @@ impl Content {
                 y: (head_position.y + self.current_dir.y),
             };
 
-            // 检查蛇是否越界
-            if new_head_position.x >= SIDE_LENGTH as i8
-                || new_head_position.y >= SIDE_LENGTH as i8
-                || new_head_position.x < 0
-                || new_head_position.y < 0
-            {
+            // 预计算索引
+            let new_head_index = new_head_position.as_index();
+
+            // 静态地图边界检查（不可省略）
+            if new_head_position.x >= SIDE_LENGTH as i8 || new_head_position.x < 0 {
+                return false;
+            }
+            if new_head_position.y >= SIDE_LENGTH as i8 || new_head_position.y < 0 {
                 return false;
             }
 
-            match self.map[new_head_position.as_index()] {
+            match self.map[new_head_index] {
                 EMPTY => {
                     // 空位：蛇头前进一格，蛇尾收缩一格
-                    self.map[new_head_position.as_index()] = SNAKE;
+                    self.map[new_head_index] = SNAKE;
                     self.snake.push(new_head_position);
-                    self.empty.pop(new_head_position);
+                    self.empty.pop(new_head_position, new_head_index);
 
                     let tail_position = self.snake.pop();
-                    self.map[tail_position.as_index()] = EMPTY;
-                    self.empty.push(tail_position);
+                    let tail_index = tail_position.as_index();
+                    self.map[tail_index] = EMPTY;
+                    self.empty.push(tail_position, tail_index);
 
                     return true;
                 }
                 FOOD => {
+                    // 检查是否还有空间生成食物
+                    if self.empty.length == 0 {
+                        return false;
+                    }
+
                     // 食物：蛇头前进一格，生成新的食物
-                    self.map[new_head_position.as_index()] = SNAKE;
+                    self.map[new_head_index] = SNAKE;
                     self.snake.push(new_head_position);
-                    self.empty.pop(new_head_position);
+                    self.empty.pop(new_head_position, new_head_index);
                     self.generate_food();
                     return true;
                 }
