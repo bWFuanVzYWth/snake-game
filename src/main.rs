@@ -237,36 +237,47 @@ fn main() -> std::io::Result<()> {
     crossterm::terminal::enable_raw_mode()?;
     let mut content = Content::default();
     let mut moves_count: usize = 0;
+    let mut last_update = std::time::Instant::now();
 
     content.init();
-    content.print_board(); // 初始打印
+    content.print_board();
 
     loop {
-        moves_count += 1;
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(last_update);
 
-        let direction = {
-            let mut dir = NONE;
-            // 仅在超时前读取一次按键
-            if crossterm::event::poll(std::time::Duration::from_millis(100)).unwrap_or(false) {
-                if let Ok(crossterm::event::Event::Key(key_event)) = crossterm::event::read() {
-                    use crossterm::event::KeyCode;
-                    dir = match key_event.code {
-                        KeyCode::Up => UP,
-                        KeyCode::Down => DOWN,
-                        KeyCode::Left => LEFT,
-                        KeyCode::Right => RIGHT,
-                        _ => NONE,
-                    };
+        // 仅在达到500ms时更新
+        if elapsed >= std::time::Duration::from_millis(500) {
+            moves_count += 1;
+            last_update = now; // 严格固定更新间隔
+
+            // 每次更新前读取方向
+            let direction = {
+                let mut dir = NONE;
+                while crossterm::event::poll(std::time::Duration::from_millis(0)).unwrap_or(false) {
+                    if let Ok(crossterm::event::Event::Key(key_event)) = crossterm::event::read() {
+                        use crossterm::event::KeyCode;
+                        dir = match key_event.code {
+                            KeyCode::Up => UP,
+                            KeyCode::Down => DOWN,
+                            KeyCode::Left => LEFT,
+                            KeyCode::Right => RIGHT,
+                            _ => NONE,
+                        };
+                    }
                 }
+                dir
+            };
+
+            if !content.update(direction) {
+                break;
             }
-            dir // 每帧仅读取一次方向
-        };
 
-        if !content.update(direction) {
-            break;
+            content.print_board();
+        } else {
+            // 短暂休眠避免CPU过载
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
-
-        content.print_board(); // 状态更新后打印
     }
 
     println!("Game over after {moves_count} moves");
