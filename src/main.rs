@@ -208,12 +208,19 @@ impl Content {
     }
 
     fn print_board(&self) {
-        print!("\x1B[2J\x1B[1;1H");
-        println!("{}", "-".repeat(SIDE_LENGTH + 2));
+        const BORDER: &str = "-";
+        const BORDER_LENGTH: usize = SIDE_LENGTH + 2;
+
+        let border_line = BORDER.repeat(BORDER_LENGTH);
+        let mut output = String::with_capacity(MAP_SIZE + 4 * SIDE_LENGTH);
+
+        output.push_str("\x1B[2J\x1B[1;1H");
+        output.push_str(&format!("{border_line}\n"));
 
         for i in 0..MAP_SIZE {
-            if i % SIDE_LENGTH == 0 {
-                print!("|");
+            let pos = i % SIDE_LENGTH;
+            if pos == 0 {
+                output.push('|');
             }
 
             let ch = match self.map[i] {
@@ -222,67 +229,58 @@ impl Content {
                 FOOD => 'F',
                 _ => panic!("Invalid cell value"),
             };
-            print!("{}", ch);
+            output.push(ch);
 
-            if (i + 1) % SIDE_LENGTH == 0 {
-                println!("|");
+            if (pos + 1) == SIDE_LENGTH {
+                output.push_str("|\n");
             }
         }
 
-        println!("{}", "-".repeat(SIDE_LENGTH + 2));
+        output.push_str(&format!("{border_line}\n"));
+
+        print!("{output}");
     }
 }
 
+const UPDATE_INTERVAL_MILLIS: u64 = 250;
+
 fn main() -> std::io::Result<()> {
     crossterm::terminal::enable_raw_mode()?;
+
     let mut content = Content::default();
     let mut moves_count: usize = 0;
-    let mut last_update = std::time::Instant::now();
 
     content.init();
     content.print_board();
 
     loop {
-        let now = std::time::Instant::now();
-        let elapsed = now.duration_since(last_update);
-
-        // 仅在达到500ms时更新
-        if elapsed >= std::time::Duration::from_millis(500) {
-            moves_count += 1;
-            last_update = now; // 严格固定更新间隔
-
-            // 优化后的方向读取逻辑
-            let direction = {
-                let mut dir = NONE;
-                while crossterm::event::poll(std::time::Duration::from_millis(0))? {
-                    if let Ok(crossterm::event::Event::Key(key_event)) = crossterm::event::read() {
-                        use crossterm::event::KeyCode;
-                        dir = match key_event.code {
-                            KeyCode::Up => UP,
-                            KeyCode::Down => DOWN,
-                            KeyCode::Left => LEFT,
-                            KeyCode::Right => RIGHT,
-                            _ => NONE,
-                        };
-                    }
+        // 非阻塞式输入处理
+        let direction = {
+            let mut dir = NONE;
+            while crossterm::event::poll(std::time::Duration::from_millis(0))? {
+                if let Ok(crossterm::event::Event::Key(key_event)) = crossterm::event::read() {
+                    use crossterm::event::KeyCode;
+                    dir = match key_event.code {
+                        KeyCode::Up => UP,
+                        KeyCode::Down => DOWN,
+                        KeyCode::Left => LEFT,
+                        KeyCode::Right => RIGHT,
+                        _ => NONE,
+                    };
                 }
-                dir
-            };
-
-            if !content.update(direction) {
-                break;
             }
+            dir
+        };
 
-            content.print_board();
-        } else {
-            // 优化后的休眠逻辑
-            let remaining = std::time::Duration::from_millis(500).saturating_sub(elapsed);
-            if remaining > std::time::Duration::from_millis(10) {
-                std::thread::sleep(remaining - std::time::Duration::from_millis(5));
-            } else {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+        if !content.update(direction) {
+            break;
         }
+
+        moves_count += 1;
+        content.print_board();
+
+        // 固定时间休眠
+        std::thread::sleep(std::time::Duration::from_millis(UPDATE_INTERVAL_MILLIS));
     }
 
     println!("Game over after {moves_count} moves");
