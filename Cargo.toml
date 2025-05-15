@@ -6,3 +6,12 @@ edition = "2024"
 [dependencies]
 crossterm = "0.29.0"
 rand = "0.9.1"
+
+[profile.release]
+# 最小化尺寸优先
+lto = true
+codegen-units = 1
+opt-level = "z"
+
+# 但是保留调试信息
+strip = "none"
