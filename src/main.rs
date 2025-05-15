@@ -34,84 +34,17 @@ impl Position {
     }
 }
 
-struct Snake {
-    tail_index: usize,                     // 蛇尾坐标索引
-    length: usize,                         // 蛇的长度
-    positions_queue: [Position; MAP_SIZE], // 蛇坐标队列，仅`snake_length`个连续元素有效
-}
-
-impl Default for Snake {
-    fn default() -> Self {
-        Self {
-            tail_index: 0,
-            length: 0,
-            positions_queue: [Position::default(); MAP_SIZE],
-        }
-    }
-}
-
-impl Snake {
-    fn push(&mut self, position: Position) {
-        let head_index = (self.tail_index + self.length) % MAP_SIZE;
-        self.positions_queue[head_index] = position;
-        self.length += 1;
-    }
-
-    fn pop(&mut self) -> Position {
-        let position = self.positions_queue[self.tail_index];
-        self.length -= 1;
-        self.tail_index = (self.tail_index + 1) % MAP_SIZE;
-        position
-    }
-}
-
-struct Empty {
-    length: usize,                        // 空格坐标长度
-    positions_set: [Position; MAP_SIZE],  // 空格坐标，仅前`empty_length`个有效
-    positions_indices: [usize; MAP_SIZE], // 空格坐标索引，仅当对应坐标是空格时才有效
-}
-
-impl Default for Empty {
-    fn default() -> Self {
-        Self {
-            length: MAP_SIZE,
-            positions_set: std::array::from_fn(Position::from_index),
-            positions_indices: std::array::from_fn(|i| i),
-        }
-    }
-}
-
-impl Empty {
-    fn pop(&mut self, _position: Position, pos_index: usize) {
-        // 维护空格坐标长度
-        self.length -= 1;
-
-        // 把待删除的空格坐标替换为最后一个空格坐标
-        let remove_index = self.positions_indices[pos_index];
-        let last_empty_position = self.positions_set[self.length];
-        self.positions_set[remove_index] = last_empty_position;
-
-        // 维护空格坐标索引
-        self.positions_indices[last_empty_position.as_index()] = remove_index;
-    }
-
-    fn push(&mut self, _position: Position, pos_index: usize) {
-        // 维护空格坐标索引
-        self.positions_indices[pos_index] = self.length;
-
-        // 在列表最后插入新的空格坐标
-        self.positions_set[self.length] = _position;
-
-        // 维护空格坐标长度
-        self.length += 1;
-    }
+const fn offset(base: usize, offset: usize) -> usize {
+    (base + offset) % MAP_SIZE
 }
 
 struct Content {
     current_dir: Position, // 记住前进方向
     map: [u8; MAP_SIZE],   // 地图
-    snake: Snake,          // 移动相关的数据结构
-    empty: Empty,          // 食物生成相关的数据结构
+    snake_tail_index: usize,
+    snake_length: usize,
+    positions_list: [Position; MAP_SIZE],
+    indices_list: [usize; MAP_SIZE],
 }
 
 impl Default for Content {
@@ -119,8 +52,11 @@ impl Default for Content {
         Self {
             current_dir: NONE,
             map: [0; MAP_SIZE],
-            empty: Empty::default(),
-            snake: Snake::default(),
+            snake_tail_index: 0,
+            snake_length: 1,
+            positions_list: std::array::from_fn(|i| Position::from_index(i)),
+            indices_list: std::array::from_fn(|i| i),
+            // TODO 检查初始化是否正确
         }
     }
 }
@@ -128,8 +64,13 @@ impl Default for Content {
 impl Content {
     fn food_position(&self) -> Position {
         let mut rng = rand::rng();
-        let index = rand::Rng::random_range(&mut rng, 0..self.empty.length);
-        self.empty.positions_set[index]
+        let empty_index_from = offset(self.snake_tail_index, self.snake_length + 1);
+        let empty_length = MAP_SIZE - self.snake_length - 1;
+        let index = offset(
+            empty_index_from,
+            rand::Rng::random_range(&mut rng, 0..empty_length),
+        );
+        self.positions_list[index]
     }
 
     fn generate_food(&mut self) {
@@ -137,23 +78,36 @@ impl Content {
         let food_index = food_position.as_index();
 
         self.map[food_index] = FOOD;
-        self.empty.pop(food_position, food_index);
+        // FIXME 这里没有创建空位，要创建吗？
+        // 想想应该不用，食物本来就不会撞到人。每次先让push蛇头，再生成食物，就不会错了
     }
 
-    // 生成初始的蛇与食物
+    // 生成初始的食物
     fn init(&mut self) {
-        let snake_position = Position {
-            x: (SIDE_LENGTH / 2) as i8,
-            y: (SIDE_LENGTH / 2) as i8,
-        };
-
-        let snake_index = snake_position.as_index();
-
-        self.map[snake_index] = 1;
-        self.snake.push(snake_position);
-        self.empty.pop(snake_position, snake_index);
-
         self.generate_food();
+    }
+
+    fn pop_snake_tail(&mut self) -> Position {
+        let tail_position = self.positions_list[self.snake_tail_index];
+        self.map[self.snake_tail_index] = EMPTY;
+        self.snake_tail_index = offset(self.snake_tail_index, 1);
+        self.snake_length -= 1;
+
+        tail_position
+    }
+
+    fn push_snake_head(&mut self, head_pos: Position) {
+        // 计算蛇头位置，插入蛇，维护蛇长
+        let head_index = offset(self.snake_tail_index, self.snake_length);
+        self.positions_list[head_index] = head_pos;
+        self.map[head_index] = SNAKE;
+        self.snake_length += 1;
+
+        // 移动empty，维护被移动的empty的index
+        let empty_index_to = head_pos.as_index();
+        let empty_index_from = offset(head_index, 1);
+        self.indices_list[self.positions_list[empty_index_from].as_index()] = empty_index_to;
+        self.positions_list[empty_index_to] = self.positions_list[empty_index_from];
     }
 
     fn update(&mut self, direction: Position) -> u8 {
@@ -166,8 +120,8 @@ impl Content {
         }
 
         // 计算新的蛇头位置
-        let head_position =
-            self.snake.positions_queue[(self.snake.tail_index + self.snake.length - 1) % MAP_SIZE];
+        let head_index = offset(self.snake_tail_index, self.snake_length);
+        let head_position = self.positions_list[head_index];
         let new_head_position = Position {
             x: (head_position.x + self.current_dir.x),
             y: (head_position.y + self.current_dir.y),
@@ -186,27 +140,19 @@ impl Content {
         match self.map[new_head_index] {
             EMPTY => {
                 // 空位：蛇头前进一格，蛇尾收缩一格
-                self.map[new_head_index] = SNAKE;
-                self.snake.push(new_head_position);
-                self.empty.pop(new_head_position, new_head_index);
-
-                let tail_position = self.snake.pop();
-                let tail_index = tail_position.as_index();
-                self.map[tail_index] = EMPTY;
-                self.empty.push(tail_position, tail_index);
+                self.push_snake_head(new_head_position);
+                self.pop_snake_tail();
 
                 STATE_GO
             }
             FOOD => {
                 // 检查是否还有空间生成食物
-                if self.empty.length == 0 {
+                if self.snake_length >= 255 {
                     return STATE_GAME_OVER;
                 }
 
                 // 食物：蛇头前进一格，生成新的食物
-                self.map[new_head_index] = SNAKE;
-                self.snake.push(new_head_position);
-                self.empty.pop(new_head_position, new_head_index);
+                self.push_snake_head(new_head_position);
                 self.generate_food();
 
                 STATE_GO
