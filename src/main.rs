@@ -91,7 +91,7 @@ impl SnakeGame {
         self.map[food_hash] = CELL_FOOD;
     }
 
-    fn pop_snake_tail(&mut self) -> usize {
+    const fn pop_snake_tail(&mut self) -> usize {
         // 只是弹出蛇尾，不用移动positions中的元素
         let tail_hash = self.hashed_positions[self.tail_index];
 
@@ -107,7 +107,7 @@ impl SnakeGame {
         tail_hash
     }
 
-    fn push_snake_head(&mut self, head_hash: usize) {
+    const fn push_snake_head(&mut self, head_hash: usize) {
         // 找到新的蛇头对应的元素
         let new_head_hash = head_hash;
         let new_head_index = self.indices[new_head_hash];
