@@ -74,8 +74,6 @@ impl Default for SnakeGame {
     }
 }
 
-// TODO 把所有传递和储存的position都尽量改成hash
-
 impl SnakeGame {
     fn random_food_hashed_position(&self) -> usize {
         let mut rng = rand::rng();
@@ -126,6 +124,7 @@ impl SnakeGame {
         self.map[new_head_hash] = CELL_SNAKE;
         self.length += 1;
     }
+
     /// 游戏更新的主要逻辑
     ///
     /// 1. 删除蛇尾
@@ -229,7 +228,6 @@ fn main() -> std::io::Result<()> {
     content.render();
 
     loop {
-        // 非阻塞式输入处理
         let direction = {
             let mut dir = DIRECTION_NONE;
             while crossterm::event::poll(std::time::Duration::from_millis(0))? {
@@ -247,8 +245,6 @@ fn main() -> std::io::Result<()> {
             dir
         };
 
-        // dbg!(&content);
-
         match content.update(direction) {
             STATE_OVER => {
                 break;
@@ -262,7 +258,6 @@ fn main() -> std::io::Result<()> {
 
         content.render();
 
-        // 固定时间休眠
         std::thread::sleep(std::time::Duration::from_millis(UPDATE_INTERVAL_MILLIS));
     }
 
