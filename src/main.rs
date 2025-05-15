@@ -40,12 +40,12 @@ const fn wrapping_offset(base: usize, offset: usize) -> usize {
 
 #[derive(Debug)]
 struct SnakeGame {
-    direction: Position,             // 记住前进方向
-    map: [u8; MAP_SIZE],             // 游戏地图
-    tail_index: usize,               // 蛇尾在`positions`的索引
-    length: usize,                   // 蛇的长度
-    positions: [Position; MAP_SIZE], // 用于O(1)复杂度维护蛇身与空位
-    indices: [usize; MAP_SIZE],      // 用于O(1)复杂度查找`positions`中元素的`index`
+    direction: Position,                 // 记住前进方向
+    map: [u8; MAP_SIZE],                 // 游戏地图
+    tail_index: usize,                   // 蛇尾在`positions`的索引
+    length: usize,                       // 蛇的长度
+    hashed_positions: [usize; MAP_SIZE], // 用于O(1)复杂度维护蛇身与空位
+    indices: [usize; MAP_SIZE],          // 用于O(1)复杂度查找`positions`中元素的`index`
 }
 
 impl Default for SnakeGame {
@@ -55,7 +55,7 @@ impl Default for SnakeGame {
             map: [CELL_EMPTY; MAP_SIZE],
             tail_index: 0,
             length: 0,
-            positions: std::array::from_fn(Position::from_hash),
+            hashed_positions: std::array::from_fn(|i| i),
             indices: std::array::from_fn(|i| i),
         };
 
@@ -65,7 +65,7 @@ impl Default for SnakeGame {
             y: (MAP_SIDE_LENGTH / 2) as i8,
         };
         tmp.tail_index = SNAKE_POSITION.as_hash();
-        tmp.push_snake_head(SNAKE_POSITION);
+        tmp.push_snake_head(SNAKE_POSITION.as_hash());
 
         // 生成初始食物
         tmp.generate_food();
@@ -77,7 +77,7 @@ impl Default for SnakeGame {
 // TODO 把所有传递和储存的position都尽量改成hash
 
 impl SnakeGame {
-    fn random_food_position(&self) -> Position {
+    fn random_food_hashed_position(&self) -> usize {
         let mut rng = rand::rng();
         let empty_indices_base = wrapping_offset(self.tail_index, self.length);
         let empty_indices_length = MAP_SIZE - self.length;
@@ -85,43 +85,40 @@ impl SnakeGame {
             empty_indices_base,
             rand::Rng::random_range(&mut rng, 0..empty_indices_length),
         );
-        self.positions[empty_indices_random]
+        self.hashed_positions[empty_indices_random]
     }
 
     fn generate_food(&mut self) {
-        let food_position = self.random_food_position();
-        let food_hash = food_position.as_hash();
-
+        let food_hash = self.random_food_hashed_position();
         self.map[food_hash] = CELL_FOOD;
     }
 
-    fn pop_snake_tail(&mut self) -> Position {
+    fn pop_snake_tail(&mut self) -> usize {
         // 只是弹出蛇尾，不用移动positions中的元素
-        let tail_position = self.positions[self.tail_index];
+        let tail_hash = self.hashed_positions[self.tail_index];
 
         // 修改tail_index
         self.tail_index = wrapping_offset(self.tail_index, 1);
 
         // 修改map
-        let tail_hash = tail_position.as_hash();
         self.map[tail_hash] = CELL_EMPTY;
 
         // 蛇长--
         self.length -= 1;
 
-        tail_position
+        tail_hash
     }
 
-    fn push_snake_head(&mut self, head_position: Position) {
+    fn push_snake_head(&mut self, head_hash: usize) {
         // 找到新的蛇头对应的元素
-        let new_head_hash = head_position.as_hash();
+        let new_head_hash = head_hash;
         let new_head_index = self.indices[new_head_hash];
         // 找到因为会被覆写，所以需要迁移的元素
         let relocate_from_index = wrapping_offset(self.tail_index, self.length);
-        let relocate_from_hash = self.positions[relocate_from_index].as_hash();
+        let relocate_from_hash = self.hashed_positions[relocate_from_index];
         // 交换元素
-        self.positions[new_head_index] = self.positions[relocate_from_index];
-        self.positions[relocate_from_index] = head_position;
+        self.hashed_positions[new_head_index] = self.hashed_positions[relocate_from_index];
+        self.hashed_positions[relocate_from_index] = head_hash;
         // 维护因交换元素变化的索引
         self.indices[new_head_hash] = relocate_from_index;
         self.indices[relocate_from_hash] = new_head_index;
@@ -146,7 +143,7 @@ impl SnakeGame {
 
         // 计算新的蛇头位置
         let head_index = wrapping_offset(self.tail_index, self.length - 1);
-        let head_position = self.positions[head_index];
+        let head_position = Position::from_hash(self.hashed_positions[head_index]);
         let new_head_position = Position {
             x: (head_position.x + self.direction.x),
             y: (head_position.y + self.direction.y),
@@ -165,7 +162,7 @@ impl SnakeGame {
         match self.map[new_head_hash] {
             CELL_EMPTY => {
                 self.pop_snake_tail();
-                self.push_snake_head(new_head_position);
+                self.push_snake_head(new_head_hash);
 
                 STATE_RUN
             }
@@ -174,7 +171,7 @@ impl SnakeGame {
                     return STATE_OVER;
                 }
 
-                self.push_snake_head(new_head_position);
+                self.push_snake_head(new_head_hash);
                 self.generate_food();
 
                 STATE_RUN
