@@ -47,6 +47,11 @@ struct SnakeGame {
 impl Default for SnakeGame {
     /// 返回贪吃蛇的默认上下文。其实就是初始化游戏。
     fn default() -> Self {
+        const SNAKE_POSITION: Position = Position {
+            x: (MAP_SIDE_LENGTH / 2) as i8,
+            y: (MAP_SIDE_LENGTH / 2) as i8,
+        };
+
         let mut tmp = Self {
             direction: DIRECTION_NONE,
             map: [CELL_EMPTY; MAP_SIZE],
@@ -57,10 +62,7 @@ impl Default for SnakeGame {
         };
 
         // 生成初始蛇
-        const SNAKE_POSITION: Position = Position {
-            x: (MAP_SIDE_LENGTH / 2) as i8,
-            y: (MAP_SIDE_LENGTH / 2) as i8,
-        };
+
         tmp.tail_index = SNAKE_POSITION.as_hash();
         tmp.push_snake_head(SNAKE_POSITION.as_hash());
 
@@ -74,7 +76,7 @@ impl Default for SnakeGame {
 impl SnakeGame {
     /// 用于维护环形队列索引。
     ///
-    /// 当MAP_SIZE是2的整数次幂时，除法可用位运算取代，甚至直接依赖数据类型的溢出截断
+    /// 当`MAP_SIZE`是2的整数次幂时，除法可用位运算取代，甚至直接依赖数据类型的溢出截断
     const fn wrapping_offset(base: usize, offset: usize) -> usize {
         (base + offset) % MAP_SIZE
     }
@@ -197,11 +199,13 @@ impl SnakeGame {
     ///
     /// 不参与核心逻辑，不必关心复杂度，此处仅使用最朴素的实现
     fn render(&self) {
+        use std::fmt::Write;
+
         let border_line = "-".repeat(MAP_SIDE_LENGTH + 2);
         let mut output = String::with_capacity(MAP_SIZE + 4 * MAP_SIDE_LENGTH);
 
-        output.push_str("\x1B[2J\x1B[1;1H");
-        output.push_str(&format!("{border_line}\n"));
+        let _ = write!(output, "\x1B[2J\x1B[1;1H");
+        let _ = writeln!(output, "{border_line}");
 
         for i in 0..MAP_SIZE {
             let pos = i % MAP_SIDE_LENGTH;
@@ -218,11 +222,11 @@ impl SnakeGame {
             output.push(ch);
 
             if (pos + 1) == MAP_SIDE_LENGTH {
-                output.push_str("|\n");
+                let _ = writeln!(output, "|");
             }
         }
 
-        output.push_str(&format!("{border_line}\n"));
+        let _ = writeln!(output, "{border_line}");
 
         print!("{output}");
     }
