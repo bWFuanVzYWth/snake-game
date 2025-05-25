@@ -29,7 +29,7 @@ impl Position {
         }
     }
 
-    pub const fn as_hash(&self) -> usize {
+    pub const fn to_hash(self) -> usize {
         self.y as usize * MAP_SIDE_LENGTH + self.x as usize
     }
 }
@@ -63,8 +63,8 @@ impl Default for SnakeGame {
 
         // 生成初始蛇
 
-        tmp.tail_index = SNAKE_POSITION.as_hash();
-        tmp.push_snake_head(SNAKE_POSITION.as_hash());
+        tmp.tail_index = SNAKE_POSITION.to_hash();
+        tmp.push_snake_head(SNAKE_POSITION.to_hash());
 
         // 生成初始食物
         tmp.generate_food();
@@ -168,7 +168,7 @@ impl SnakeGame {
             return STATE_OVER;
         }
 
-        let new_head_hash = new_head_position.as_hash();
+        let new_head_hash = new_head_position.to_hash();
 
         // 碰撞测试
         match self.map[new_head_hash] {
