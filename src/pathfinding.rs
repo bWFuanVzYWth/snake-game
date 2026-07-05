@@ -24,11 +24,19 @@ fn traffic_dirs(pos: Position) -> [Direction; 2] {
 
 /// 在交规定向图上 BFS，返回从 start 到每个格子的最短距离（步数）。
 ///
-/// 展开邻居时优先处理贴蛇身的格子——同距离的路径中选更贴近蛇身的。
-fn bfs_distances(start: usize, config: &MapConfig, body_set: &[bool]) -> Vec<u32> {
+/// 模拟蛇尾让路：蛇身第 i 节（i=0 为尾）在 d > i 步后已被弹出，格子可用。
+/// 展开邻居时优先贴障碍的格子。
+fn bfs_distances(start: usize, config: &MapConfig, body: &[usize], body_set: &[bool]) -> Vec<u32> {
     let total = config.total_size();
     let mut dist = vec![u32::MAX; total];
     let mut queue = VecDeque::new();
+    // body_idx[hash] = 该格在蛇身中的索引（0=尾），不在蛇身中为 usize::MAX
+    let mut body_idx = vec![usize::MAX; total];
+    for (i, &h) in body.iter().enumerate() {
+        body_idx[h] = i;
+    }
+    // 蛇头总是可用（起点）
+    let head_idx = body.len().saturating_sub(1);
 
     dist[start] = 0;
     queue.push_back(start);
@@ -39,12 +47,21 @@ fn bfs_distances(start: usize, config: &MapConfig, body_set: &[bool]) -> Vec<u32
         let mut neighbors: Vec<usize> = traffic_dirs(pos)
             .iter()
             .filter_map(|&dir| step(cur, dir, config))
-            .filter(|&n| dist[n] == u32::MAX)
+            .filter(|&n| {
+                if dist[n] != u32::MAX {
+                    return false;
+                }
+                // 蛇身格：d 步后前 d 节已被弹出，d > idx 时可用
+                let bi = body_idx[n];
+                if bi == usize::MAX { return true; }      // 不在蛇身中
+                if bi == head_idx { return true; }         // 蛇头（起点）
+                bi < d as usize // 已经弹出了
+            })
             .collect();
-        // 贴蛇身的格子优先入队（同距离内优先处理）
+        // 贴障碍的格子优先入队（同距离内优先处理）
         neighbors.sort_by_key(|&n| {
-            let adj = count_body_neighbors(n, config, body_set);
-            std::cmp::Reverse(adj) // 邻身数多的排前面
+            let adj = count_obstacle_neighbors(n, config, body_set);
+            std::cmp::Reverse(adj)
         });
         for n in neighbors {
             dist[n] = d;
@@ -55,18 +72,21 @@ fn bfs_distances(start: usize, config: &MapConfig, body_set: &[bool]) -> Vec<u32
     dist
 }
 
-/// 统计某格子四邻域中有多少蛇身格
-fn count_body_neighbors(hash: usize, config: &MapConfig, body_set: &[bool]) -> u32 {
+/// 统计某格子四邻域中"障碍"数：墙 + 蛇身。
+/// 贴墙和贴蛇身都能减少地图割裂。
+fn count_obstacle_neighbors(hash: usize, config: &MapConfig, body_set: &[bool]) -> u32 {
     let mut count = 0;
     let pos = config.from_hash(hash);
     for &d in &[Direction::Right, Direction::Left, Direction::Up, Direction::Down] {
         let (dx, dy) = d.delta();
         let nx = pos.x as i64 + dx as i64;
         let ny = pos.y as i64 + dy as i64;
-        if nx >= 0 && nx < config.width as i64 && ny >= 0 && ny < config.height as i64 {
+        if nx < 0 || nx >= config.width as i64 || ny < 0 || ny >= config.height as i64 {
+            count += 1; // 墙
+        } else {
             let n = config.to_hash(Position { x: nx as u32, y: ny as u32 });
             if body_set[n] {
-                count += 1;
+                count += 1; // 蛇身
             }
         }
     }
@@ -105,48 +125,56 @@ pub fn next_dir(snake: &SnakeGame) -> Option<Direction> {
 
     let cur_dir = snake.direction();
 
-    // 构建蛇身集合用于第一步碰撞检测
+    // 蛇身数组（尾→头），用于时间感知的碰撞检测
+    let body: Vec<usize> = snake.snake_hashes().copied().collect();
     let body_set: Vec<bool> = {
         let mut s = vec![false; config.total_size()];
-        for &h in snake.snake_hashes() {
+        for &h in &body {
             s[h] = true;
         }
         s
+    };
+
+    // 第一步碰撞：只能用 body_set 静态检查（此时还没开始模拟弹尾）
+    let first_step_blocked = |h: usize| -> bool {
+        body_set[h] && h != *body.last().unwrap() // 不能是蛇头自身
     };
 
     // 对每个交规方向，BFS 计算从 next 到最近食物的图距离
     let head_pos = config.from_hash(head);
     let mut best_dir = cur_dir;
     let mut best_dist = u32::MAX;
+    let mut best_hug = 0u32;
 
     for &d in &traffic_dirs(head_pos) {
-        // 180° 掉头排除
         if let Some(cd) = cur_dir {
             if d == cd.opposite() {
                 continue;
             }
         }
-        // 第一步必须合法
         let next = match step(head, d, config) {
             Some(h) => h,
             None => continue,
         };
-        if body_set[next] {
+        if first_step_blocked(next) {
             continue;
         }
-        // BFS：从 next 到所有格子的距离（优先贴蛇身路径）
-        let dist = bfs_distances(next, config, &body_set);
+        // BFS：时间感知蛇身（d 步后前 d 节已弹出）
+        let dist = bfs_distances(next, config, &body, &body_set);
         let nearest = foods.iter()
             .map(|&f| dist[f])
             .min()
             .unwrap_or(u32::MAX);
         let total = if nearest == u32::MAX { u32::MAX } else { 1 + nearest };
+        let hug = count_obstacle_neighbors(next, config, &body_set);
 
-        // 选总距离最近的；同距保持原方向减少转弯
+        // 优先级：距离近 > 贴障碍多 > 保持原方向（减少转向）
         if total < best_dist
-            || (total == best_dist && Some(d) == cur_dir)
+            || (total == best_dist && hug > best_hug)
+            || (total == best_dist && hug == best_hug && Some(d) == cur_dir)
         {
             best_dist = total;
+            best_hug = hug;
             best_dir = Some(d);
         }
     }
@@ -189,8 +217,9 @@ mod tests {
     fn test_bfs_reaches_all_cells() {
         // 在 16×16 上，交规定向图应该是强连通的
         let config = MapConfig::new(16, 16);
-        let empty_body = vec![false; config.total_size()];
-        let dist = bfs_distances(0, &config, &empty_body);
+        let empty_body: Vec<usize> = vec![];
+        let empty_set = vec![false; config.total_size()];
+        let dist = bfs_distances(0, &config, &empty_body, &empty_set);
         let reachable = dist.iter().filter(|&&d| d != u32::MAX).count();
         assert_eq!(reachable, config.total_size(),
             "交规定向图应连通所有格子（even×even 保证）");
