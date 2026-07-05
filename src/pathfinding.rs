@@ -251,7 +251,6 @@ mod tests {
 
     #[test]
     fn test_no_self_collision_first_step() {
-        // 多帧模拟，验证 AI 返回的方向不会导致第一步自撞
         for seed in 0..20 {
             let config = MapConfig::new(16, 16);
             let mut rng = SmallRng::seed_from_u64(seed);
@@ -266,7 +265,29 @@ mod tests {
                     break;
                 }
             }
-            // 不应 panic
+        }
+    }
+
+    /// 验证：存活期间 next_dir 永不返回 None——交规图强连通 + 时间感知蛇身保证总有路
+    #[test]
+    fn test_never_returns_none_while_alive() {
+        for seed in 0..30 {
+            let config = MapConfig::new(16, 16);
+            let mut rng = SmallRng::seed_from_u64(seed);
+            let mut game = SnakeGame::new(config, 3, 5, &mut rng);
+            for step in 0..500 {
+                let dir = next_dir(&game);
+                let state = game.update(dir, &mut rng);
+                match state {
+                    crate::types::GameState::Running => {
+                        assert!(dir.is_some(),
+                            "seed={seed} step={step}: AI returned None while game is Running. \
+                             head={:?} len={} foods={}",
+                            game.head_position(), game.length(), game.food_count());
+                    }
+                    _ => break, // Over/Won — 游戏结束，不需要方向了
+                }
+            }
         }
     }
 }
