@@ -23,8 +23,9 @@ fn traffic_dirs(pos: Position) -> [Direction; 2] {
 // ============================================================================
 
 /// 在交规定向图上 BFS，返回从 start 到每个格子的最短距离（步数）。
-/// 不检查蛇身碰撞——交规保证蛇身永远在头"后面"。
-fn bfs_distances(start: usize, config: &MapConfig) -> Vec<u32> {
+///
+/// 展开邻居时优先处理贴蛇身的格子——同距离的路径中选更贴近蛇身的。
+fn bfs_distances(start: usize, config: &MapConfig, body_set: &[bool]) -> Vec<u32> {
     let total = config.total_size();
     let mut dist = vec![u32::MAX; total];
     let mut queue = VecDeque::new();
@@ -35,17 +36,41 @@ fn bfs_distances(start: usize, config: &MapConfig) -> Vec<u32> {
     while let Some(cur) = queue.pop_front() {
         let d = dist[cur] + 1;
         let pos = config.from_hash(cur);
-        for &dir in &traffic_dirs(pos) {
-            if let Some(next) = step(cur, dir, config) {
-                if dist[next] == u32::MAX {
-                    dist[next] = d;
-                    queue.push_back(next);
-                }
-            }
+        let mut neighbors: Vec<usize> = traffic_dirs(pos)
+            .iter()
+            .filter_map(|&dir| step(cur, dir, config))
+            .filter(|&n| dist[n] == u32::MAX)
+            .collect();
+        // 贴蛇身的格子优先入队（同距离内优先处理）
+        neighbors.sort_by_key(|&n| {
+            let adj = count_body_neighbors(n, config, body_set);
+            std::cmp::Reverse(adj) // 邻身数多的排前面
+        });
+        for n in neighbors {
+            dist[n] = d;
+            queue.push_back(n);
         }
     }
 
     dist
+}
+
+/// 统计某格子四邻域中有多少蛇身格
+fn count_body_neighbors(hash: usize, config: &MapConfig, body_set: &[bool]) -> u32 {
+    let mut count = 0;
+    let pos = config.from_hash(hash);
+    for &d in &[Direction::Right, Direction::Left, Direction::Up, Direction::Down] {
+        let (dx, dy) = d.delta();
+        let nx = pos.x as i64 + dx as i64;
+        let ny = pos.y as i64 + dy as i64;
+        if nx >= 0 && nx < config.width as i64 && ny >= 0 && ny < config.height as i64 {
+            let n = config.to_hash(Position { x: nx as u32, y: ny as u32 });
+            if body_set[n] {
+                count += 1;
+            }
+        }
+    }
+    count
 }
 
 /// 向给定方向走一步（仅边界检查，不检查蛇身）
@@ -109,8 +134,8 @@ pub fn next_dir(snake: &SnakeGame) -> Option<Direction> {
         if body_set[next] {
             continue;
         }
-        // BFS：从 next 到所有格子的距离
-        let dist = bfs_distances(next, config);
+        // BFS：从 next 到所有格子的距离（优先贴蛇身路径）
+        let dist = bfs_distances(next, config, &body_set);
         let nearest = foods.iter()
             .map(|&f| dist[f])
             .min()
@@ -164,7 +189,8 @@ mod tests {
     fn test_bfs_reaches_all_cells() {
         // 在 16×16 上，交规定向图应该是强连通的
         let config = MapConfig::new(16, 16);
-        let dist = bfs_distances(0, &config);
+        let empty_body = vec![false; config.total_size()];
+        let dist = bfs_distances(0, &config, &empty_body);
         let reachable = dist.iter().filter(|&&d| d != u32::MAX).count();
         assert_eq!(reachable, config.total_size(),
             "交规定向图应连通所有格子（even×even 保证）");
