@@ -59,13 +59,53 @@ fn step(hash: usize, dir: Direction, cfg: &MapConfig) -> Option<usize> {
 }
 
 // ============================================================================
+// 空白区连通性
+// ============================================================================
+
+/// 模拟一步（头占 next，尾放 tail）后，空白区是否保持单连通。
+fn keeps_empty_connected(
+    next: usize, tail: usize, body_set: &[bool], cfg: &MapConfig,
+) -> bool {
+    let n = cfg.total_size();
+    let mut open = vec![false; n];
+    let mut start = None;
+    for i in 0..n {
+        if (!body_set[i] || i == tail) && i != next {
+            open[i] = true;
+            start = Some(i);
+        }
+    }
+    let start = match start {
+        Some(s) => s,
+        None => return true, // 无空格
+    };
+
+    // 4-方向 flood-fill
+    let mut stack = vec![start];
+    let mut seen = vec![false; n];
+    seen[start] = true;
+    let mut cnt = 1;
+    while let Some(cur) = stack.pop() {
+        for &d in &[Direction::Right, Direction::Left, Direction::Up, Direction::Down] {
+            if let Some(nbr) = step(cur, d, cfg) {
+                if open[nbr] && !seen[nbr] {
+                    seen[nbr] = true;
+                    stack.push(nbr);
+                    cnt += 1;
+                }
+            }
+        }
+    }
+    cnt == open.iter().filter(|&&x| x).count()
+}
+
+// ============================================================================
 // 主入口
 // ============================================================================
 
 /// 返回 AI 选择的下一步方向。
 ///
-/// 对两个交规方向各跑一次 BFS，选到达最近食物总步数更小的。
-/// 同距则保持原方向减少转弯。存活期间保证返回 Some（交规图强连通）。
+/// 优先级：不割裂空白区 > 到食物步数少 > 保持原方向。
 pub fn next_dir(snake: &SnakeGame) -> Option<Direction> {
     let cfg = snake.config();
     let head = cfg.to_hash(snake.head_position()?);
@@ -75,24 +115,24 @@ pub fn next_dir(snake: &SnakeGame) -> Option<Direction> {
     }
     let cur = snake.direction();
 
-    // 蛇身集合：仅用于第一步碰撞检测
+    let body: Vec<usize> = snake.snake_hashes().copied().collect();
     let body_set: Vec<bool> = {
         let mut s = vec![false; cfg.total_size()];
-        for &h in snake.snake_hashes() {
+        for &h in &body {
             s[h] = true;
         }
         s
     };
+    let tail = body[0]; // 当前蛇尾，走一步后会被释放
 
     let mut best = cur;
     let mut best_total = u32::MAX;
+    let mut best_conn = false; // 是否保持连通
 
     for &d in &traffic_dirs(cfg.from_hash(head)) {
-        // 排除 180° 掉头
         if Some(d) == cur.map(|c| c.opposite()) {
             continue;
         }
-        // 第一步必须合法
         let nxt = match step(head, d, cfg) {
             Some(h) => h,
             None => continue,
@@ -100,14 +140,21 @@ pub fn next_dir(snake: &SnakeGame) -> Option<Direction> {
         if body_set[nxt] {
             continue;
         }
-        // BFS：从 next 出发到最近食物的图距离
+
         let dist = bfs(nxt, cfg);
         let nearest = foods.iter().map(|&f| dist[f]).min().unwrap_or(u32::MAX);
-        let total = nearest.saturating_add(1); // +1 是第一步
+        let total = nearest.saturating_add(1);
+        let conn = keeps_empty_connected(nxt, tail, &body_set, cfg);
 
-        // 距离更短，或等距时保持原方向减少转弯
-        if total < best_total || (total == best_total && Some(d) == cur) {
+        // 优先级：连通 > 不连通；连通中选距离短的；同距保持原方向
+        let better = match (conn, best_conn) {
+            (true, false) => true,
+            (false, true) => false,
+            _ => total < best_total || (total == best_total && Some(d) == cur),
+        };
+        if better {
             best_total = total;
+            best_conn = conn;
             best = Some(d);
         }
     }
