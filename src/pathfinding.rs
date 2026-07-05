@@ -26,21 +26,38 @@ fn traffic_dirs(pos: Position) -> [Direction; 2] {
 // ============================================================================
 
 /// 在交规定向图上 BFS，返回 start 到每个格子的最短步数。
-fn bfs(start: usize, config: &MapConfig) -> Vec<u32> {
+///
+/// `body` 为当前蛇身（尾→头）。BFS 距离 `d` 对应总步数 `1+d`，
+/// 原始蛇身第 `i` 节在 `i <= d` 时已被弹出，格子可用。
+fn bfs(start: usize, config: &MapConfig, body: &[usize]) -> Vec<u32> {
     let n = config.total_size();
     let mut dist = vec![u32::MAX; n];
+    let mut body_idx = vec![usize::MAX; n];
+    for (i, &h) in body.iter().enumerate() {
+        body_idx[h] = i;
+    }
+    let head_idx = body.len().saturating_sub(1);
+
     let mut q = VecDeque::new();
     dist[start] = 0;
     q.push_back(start);
     while let Some(cur) = q.pop_front() {
         let d = dist[cur] + 1;
         for &dir in &traffic_dirs(config.from_hash(cur)) {
-            if let Some(nxt) = step(cur, dir, config) {
-                if dist[nxt] == u32::MAX {
-                    dist[nxt] = d;
-                    q.push_back(nxt);
-                }
+            let nxt = match step(cur, dir, config) {
+                Some(h) => h,
+                None => continue,
+            };
+            if dist[nxt] != u32::MAX {
+                continue;
             }
+            let bi = body_idx[nxt];
+            // 不在蛇身 / 是旧蛇头 / 已经弹出 → 可通行
+            if bi != usize::MAX && bi != head_idx && bi > d as usize {
+                continue;
+            }
+            dist[nxt] = d;
+            q.push_back(nxt);
         }
     }
     dist
@@ -141,7 +158,7 @@ pub fn next_dir(snake: &SnakeGame) -> Option<Direction> {
             continue;
         }
 
-        let dist = bfs(nxt, cfg);
+        let dist = bfs(nxt, cfg, &body);
         let nearest = foods.iter().map(|&f| dist[f]).min().unwrap_or(u32::MAX);
         let total = nearest.saturating_add(1);
         let conn = keeps_empty_connected(nxt, tail, &body_set, cfg);
@@ -185,7 +202,8 @@ mod tests {
     #[test]
     fn test_bfs_reaches_all() {
         let cfg = MapConfig::new(16, 16);
-        let d = bfs(0, &cfg);
+        let empty: Vec<usize> = vec![];
+        let d = bfs(0, &cfg, &empty);
         assert_eq!(d.iter().filter(|&&x| x != u32::MAX).count(), 256,
             "even×even 交规图强连通");
     }
