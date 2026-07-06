@@ -173,12 +173,21 @@ fn heuristic(head_hash: usize, config: &MapConfig, foods: &[usize]) -> u32 {
 
 /// 从 `state` 生成所有合法后继状态。
 ///
-/// 每步模拟：尾弹出（body[0] 释放）→ 头进入（new_head 占位）。
-/// 碰撞检测仅针对 body[1..]（尾已弹出，不在碰撞范围内）。
+/// 每步需满足三个约束：
+/// 1. 交规方向（不 180° 掉头、不出界）
+/// 2. 碰撞检测（不能撞到身体任何部分，包括蛇尾——游戏先检测碰撞再弹尾）
+/// 3. 连通性守卫（走完后空白区不能割裂成两块）
 fn successors(state: &SearchState, config: &MapConfig) -> Vec<SearchState> {
     let head = state.head();
     let head_pos = config.from_hash(head);
     let mut result = Vec::with_capacity(2);
+
+    // 构建 body_idx 用于连通性检查（flood-fill 需要）
+    let n = config.total_size();
+    let mut body_idx = vec![usize::MAX; n];
+    for (i, &h) in state.body.iter().enumerate() {
+        body_idx[h] = i;
+    }
 
     for &d in &traffic_dirs(head_pos) {
         if d == state.dir.opposite() {
@@ -190,9 +199,13 @@ fn successors(state: &SearchState, config: &MapConfig) -> Vec<SearchState> {
         };
 
         // 碰撞检测：游戏先检测碰撞再弹尾，所以尾也是障碍物
-        // 不能预判弹尾——必须和 snake.rs 的 update() 顺序一致
         if state.mask.contains(new_head) {
-            continue; // 撞到身体（包括蛇尾）
+            continue;
+        }
+
+        // 连通性守卫：走这步后空白区不能割裂
+        if !keeps_empty_connected(new_head, &body_idx, config) {
+            continue;
         }
 
         // 弹尾 + 压头
