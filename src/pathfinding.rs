@@ -27,16 +27,12 @@ fn traffic_dirs(pos: Position) -> [Direction; 2] {
 
 /// 在交规定向图上 BFS，返回 start 到每个格子的最短步数。
 ///
-/// `body` 为当前蛇身（尾→头）。BFS 距离 `d` 对应总步数 `1+d`，
-/// 原始蛇身第 `i` 节在 `i <= d` 时已被弹出，格子可用。
-fn bfs(start: usize, config: &MapConfig, body: &[usize]) -> Vec<u32> {
+/// `body_idx[h]` = 格子 `h` 在蛇身（尾→头）中的索引，不在蛇身则为 `usize::MAX`。
+/// BFS 距离 `d` 对应总步数 `1+d`，原始蛇身第 `i` 节在 `i <= d` 时已被弹出，格子可用。
+fn bfs(start: usize, config: &MapConfig, body_idx: &[usize], body_len: usize) -> Vec<u32> {
     let n = config.total_size();
     let mut dist = vec![u32::MAX; n];
-    let mut body_idx = vec![usize::MAX; n];
-    for (i, &h) in body.iter().enumerate() {
-        body_idx[h] = i;
-    }
-    let head_idx = body.len().saturating_sub(1);
+    let head_idx = body_len.saturating_sub(1);
 
     let mut q = VecDeque::new();
     dist[start] = 0;
@@ -79,15 +75,19 @@ fn step(hash: usize, dir: Direction, cfg: &MapConfig) -> Option<usize> {
 // 空白区连通性
 // ============================================================================
 
-/// 模拟一步（头占 next，尾放 tail）后，空白区是否保持单连通。
+/// 模拟一步（头占 next，尾放 body[0]）后，空白区是否保持单连通。
+///
+/// `body_idx[h]` = 格子 `h` 在蛇身中的索引，不在蛇身则为 `usize::MAX`。
+/// 索引 0 是蛇尾，走一步后会被释放。
 fn keeps_empty_connected(
-    next: usize, tail: usize, body_set: &[bool], cfg: &MapConfig,
+    next: usize, body_idx: &[usize], cfg: &MapConfig,
 ) -> bool {
     let n = cfg.total_size();
     let mut open = vec![false; n];
     let mut start = None;
     for i in 0..n {
-        if (!body_set[i] || i == tail) && i != next {
+        // 不在蛇身 或 是蛇尾（即将释放）→ 空格；且不能是新头位置
+        if (body_idx[i] == usize::MAX || body_idx[i] == 0) && i != next {
             open[i] = true;
             start = Some(i);
         }
@@ -133,14 +133,14 @@ pub fn next_dir(snake: &SnakeGame) -> Option<Direction> {
     let cur = snake.direction();
 
     let body: Vec<usize> = snake.snake_hashes().copied().collect();
-    let body_set: Vec<bool> = {
-        let mut s = vec![false; cfg.total_size()];
-        for &h in &body {
-            s[h] = true;
+    let body_len = body.len();
+    let body_idx: Vec<usize> = {
+        let mut idx = vec![usize::MAX; cfg.total_size()];
+        for (i, &h) in body.iter().enumerate() {
+            idx[h] = i;
         }
-        s
+        idx
     };
-    let tail = body[0]; // 当前蛇尾，走一步后会被释放
 
     let mut best = cur;
     let mut best_total = u32::MAX;
@@ -154,14 +154,14 @@ pub fn next_dir(snake: &SnakeGame) -> Option<Direction> {
             Some(h) => h,
             None => continue,
         };
-        if body_set[nxt] {
+        if body_idx[nxt] != usize::MAX {
             continue;
         }
 
-        let dist = bfs(nxt, cfg, &body);
+        let dist = bfs(nxt, cfg, &body_idx, body_len);
         let nearest = foods.iter().map(|&f| dist[f]).min().unwrap_or(u32::MAX);
         let total = nearest.saturating_add(1);
-        let conn = keeps_empty_connected(nxt, tail, &body_set, cfg);
+        let conn = keeps_empty_connected(nxt, &body_idx, cfg);
 
         // 优先级：连通 > 不连通；连通中选距离短的；同距保持原方向
         let better = match (conn, best_conn) {
@@ -202,8 +202,8 @@ mod tests {
     #[test]
     fn test_bfs_reaches_all() {
         let cfg = MapConfig::new(16, 16);
-        let empty: Vec<usize> = vec![];
-        let d = bfs(0, &cfg, &empty);
+        let empty_idx = vec![usize::MAX; cfg.total_size()];
+        let d = bfs(0, &cfg, &empty_idx, 0);
         assert_eq!(d.iter().filter(|&&x| x != u32::MAX).count(), 256,
             "even×even 交规图强连通");
     }

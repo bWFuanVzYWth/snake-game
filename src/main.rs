@@ -13,7 +13,7 @@ use crate::types::GameState;
 use std::time::Duration;
 
 /// 默认更新间隔（毫秒）
-const UPDATE_INTERVAL_MS: u64 = 1;
+const UPDATE_INTERVAL_MS: u64 = 100;
 
 fn main() -> std::io::Result<()> {
     crossterm::terminal::enable_raw_mode()?;
