@@ -1,17 +1,8 @@
 //! 贪吃蛇自动寻路 AI
 //!
-//! **策略**：A* 状态空间搜索（逐步模拟蛇身爬行）→ fallback BFS + flood-fill。
-//!
-//! ## A* 状态空间搜索（主策略）
-//!
-//! 在蛇的**全身体配置 × 方向**状态空间上搜索最优路径到食物。
-//! 每步精确模拟：尾弹出 → 头进入，未来头位置会变成蛇身，比纯地图 BFS 更精确。
-//! 曼哈顿距离作为可采纳/一致的启发函数，保证最短路径。
-//!
-//! ## BFS + flood-fill（fallback）
-//!
-//! A* 搜索状态数超限或无解时降级：交规定向图 BFS 算距离 + 空白区连通性检查。
-//! 蛇身仅用于第一步碰撞检测——BFS 距离只用作方向排序的启发值。
+//! **纯渐进式 A\***：交规图距离为启发函数的状态空间搜索。
+//! 每步精确模拟蛇身爬行（尾弹出 → 头进入），连通性守卫保证不割裂空白区。
+//! 找到食物返回最优路径，超时/超限返回 best-so-far（离食物最近的方向）。
 
 use crate::config::MapConfig;
 use crate::snake::SnakeGame;
@@ -157,17 +148,20 @@ impl PartialOrd for AStarNode {
 
 /// 预计算：交规图上每个格子到最近食物的最短距离（忽略蛇身）。
 ///
-/// BFS 从所有食物出发，沿**反向交规边**传播。
-/// 用于 A* 启发函数——比曼哈顿距离更紧，仍然是可采纳下界。
+/// BFS 从所有食物出发，沿反向交规边传播。使用固定大小邻接表（[Option<usize>; 2]），
+/// 单次大分配替代 256 次小分配。
 fn traffic_dist_map(foods: &[usize], config: &MapConfig) -> Vec<u32> {
     let n = config.total_size();
-    // 构建反向邻接表：rev_adj[j] = 所有能一步走到 j 的格子 i
-    let mut rev_adj: Vec<Vec<usize>> = vec![Vec::with_capacity(2); n];
+    // 反向邻接表：每个格最多 2 个入边（交规保证），单次分配
+    let mut rev_adj: Vec<[Option<usize>; 2]> = vec![[None; 2]; n];
+    let mut rev_cnt = vec![0u8; n];
     for i in 0..n {
         let pos = config.from_hash(i);
         for &d in &traffic_dirs(pos) {
             if let Some(j) = step(i, d, config) {
-                rev_adj[j].push(i);
+                let k = rev_cnt[j] as usize;
+                rev_adj[j][k] = Some(i);
+                rev_cnt[j] += 1;
             }
         }
     }
@@ -180,7 +174,7 @@ fn traffic_dist_map(foods: &[usize], config: &MapConfig) -> Vec<u32> {
     }
     while let Some(cur) = q.pop_front() {
         let d = dist[cur] + 1;
-        for &prev in &rev_adj[cur] {
+        for &prev in rev_adj[cur].iter().flatten() {
             if dist[prev] == u32::MAX {
                 dist[prev] = d;
                 q.push_back(prev);
@@ -224,13 +218,12 @@ fn successors(state: &SearchState, config: &MapConfig) -> Vec<SearchState> {
     result
 }
 
-/// A* 搜索最优路径到食物。
-///
-/// 返回从初始状态出发的第一步方向；如果搜索超限或无解则返回 `None`。
+/// A* 搜索最优路径到食物（渐进式：超限返回 best-so-far）。
 ///
 /// 启发函数用交规图距离（忽略蛇身），比曼哈顿更紧 → 展开更少状态。
+/// 超 10k 展开状态或 open set 耗尽时返回离食物最近的方向，不返回 None。
 fn astar_search(
-    initial_body: &[usize],
+    initial_body: Vec<usize>,
     initial_dir: Direction,
     config: &MapConfig,
     foods: &[usize],
@@ -240,7 +233,7 @@ fn astar_search(
     // 预计算交规图距离（忽略蛇身），作为 A* 启发函数
     let tdist = traffic_dist_map(foods, config);
 
-    let initial_state = SearchState::new(initial_body.to_vec(), initial_dir);
+    let initial_state = SearchState::new(initial_body, initial_dir);
 
     let mut open = BinaryHeap::with_capacity(1024);
     let mut closed = HashSet::with_capacity(1024);
@@ -268,44 +261,26 @@ fn astar_search(
     }
 
     while let Some(node) = open.pop() {
-        // 状态去重
-        if !closed.insert(node.state.clone()) {
-            continue;
-        }
+        // 状态去重（clone 成本 ≈ hash lookup 成本，两者都 O(L)）
+        if !closed.insert(node.state.clone()) { continue; }
+
         expanded += 1;
-
-        // 更新 best-so-far（在 f = g+h 的展开顺序中，这是当前最优的下界估计）
         let node_h = tdist[node.state.head()];
-        if node_h < best_h {
-            best_h = node_h;
-            best_move = Some(node.first_move);
-        }
+        if node_h < best_h { best_h = node_h; best_move = Some(node.first_move); }
 
-        if expanded > MAX_EXPANDED {
-            // 渐进式 fallback：返回搜索到的最优方向
-            return best_move;
-        }
-
-        // 目标检测
-        if foods.contains(&node.state.head()) {
-            return Some(node.first_move);
-        }
+        if expanded > MAX_EXPANDED { return best_move; }
+        if foods.contains(&node.state.head()) { return Some(node.first_move); }
 
         // 展开后继
         for succ in successors(&node.state, config) {
-            if closed.contains(&succ) {
-                continue;
-            }
+            if closed.contains(&succ) { continue; }
             let succ_head = succ.head();
-            if foods.contains(&succ_head) {
-                return Some(node.first_move);
-            }
+            if foods.contains(&succ_head) { return Some(node.first_move); }
             let h = tdist[succ_head];
-            let g = node.g + 1;
             open.push(AStarNode {
                 state: succ,
-                g,
-                f: g.saturating_add(h),
+                g: node.g + 1,
+                f: (node.g + 1).saturating_add(h),
                 first_move: node.first_move,
             });
         }
@@ -323,6 +298,8 @@ fn keeps_empty_connected(
 ) -> bool {
     let w = config.width as usize;
     let h = config.height as usize;
+    let n = config.total_size();
+    debug_assert!(n <= 256, "stack is sized for 16×16");
 
     // 构建空位 bitmask：!body | tail & !new_head
     let mut empty = [!body_mask.0[0], !body_mask.0[1], !body_mask.0[2], !body_mask.0[3]];
@@ -331,7 +308,7 @@ fn keeps_empty_connected(
 
     // 找第一个空格作为 BFS 起点
     let start = empty.iter()
-        .position(|&w| w != 0)
+        .position(|&bits| bits != 0)
         .map(|i| i * 64 + empty[i].trailing_zeros() as usize);
     let start = match start {
         Some(s) => s,
@@ -341,6 +318,21 @@ fn keeps_empty_connected(
     let mut stack = [0usize; 256];
     let mut sp = 0u16;
     let mut seen = [0u64; 4];
+    let mut seen_cnt = 1u16;
+
+    // 内联辅助：试探格子 n，若为空且未访问则入栈
+    macro_rules! try_visit {
+        ($n:expr) => {
+            let idx = $n / 64;
+            let bit = 1u64 << ($n % 64);
+            if (empty[idx] & bit) != 0 && (seen[idx] & bit) == 0 {
+                seen[idx] |= bit;
+                seen_cnt += 1;
+                stack[sp as usize] = $n;
+                sp += 1;
+            }
+        };
+    }
 
     seen[start / 64] |= 1u64 << (start % 64);
     stack[sp as usize] = start;
@@ -352,47 +344,16 @@ fn keeps_empty_connected(
         let cx = cur % w;
         let cy = cur / w;
 
-        // 展开 4 个方向（内联边界检查，无函数调用）
-        // Right
-        if cx + 1 < w {
-            let n = cur + 1;
-            if (empty[n / 64] >> (n % 64)) & 1 != 0 && (seen[n / 64] >> (n % 64)) & 1 == 0 {
-                seen[n / 64] |= 1u64 << (n % 64);
-                stack[sp as usize] = n;
-                sp += 1;
-            }
-        }
-        // Left
-        if cx > 0 {
-            let n = cur - 1;
-            if (empty[n / 64] >> (n % 64)) & 1 != 0 && (seen[n / 64] >> (n % 64)) & 1 == 0 {
-                seen[n / 64] |= 1u64 << (n % 64);
-                stack[sp as usize] = n;
-                sp += 1;
-            }
-        }
-        // Down
-        if cy + 1 < h {
-            let n = cur + w;
-            if (empty[n / 64] >> (n % 64)) & 1 != 0 && (seen[n / 64] >> (n % 64)) & 1 == 0 {
-                seen[n / 64] |= 1u64 << (n % 64);
-                stack[sp as usize] = n;
-                sp += 1;
-            }
-        }
-        // Up
-        if cy > 0 {
-            let n = cur - w;
-            if (empty[n / 64] >> (n % 64)) & 1 != 0 && (seen[n / 64] >> (n % 64)) & 1 == 0 {
-                seen[n / 64] |= 1u64 << (n % 64);
-                stack[sp as usize] = n;
-                sp += 1;
-            }
-        }
+        if cx + 1 < w { try_visit!(cur + 1); }       // Right
+        if cx > 0     { try_visit!(cur - 1); }       // Left
+        if cy + 1 < h { try_visit!(cur + w); }       // Down
+        if cy > 0     { try_visit!(cur - w); }       // Up
     }
 
-    let empty_cnt = empty[0].count_ones() + empty[1].count_ones() + empty[2].count_ones() + empty[3].count_ones();
-    let seen_cnt = seen[0].count_ones() + seen[1].count_ones() + seen[2].count_ones() + seen[3].count_ones();
+    let empty_cnt: u16 = empty[0].count_ones() as u16
+        + empty[1].count_ones() as u16
+        + empty[2].count_ones() as u16
+        + empty[3].count_ones() as u16;
     seen_cnt == empty_cnt
 }
 
@@ -414,7 +375,7 @@ pub fn next_dir(snake: &SnakeGame) -> Option<Direction> {
     let cur = snake.direction()?;
     let body: Vec<usize> = snake.snake_hashes().copied().collect();
 
-    astar_search(&body, cur, cfg, foods)
+    astar_search(body, cur, cfg, foods)
 }
 
 // ============================================================================
@@ -601,7 +562,7 @@ mod tests {
             cfg.to_hash(Position { x: 3, y: 2 }),
         ];
         let foods = [cfg.to_hash(Position { x: 8, y: 2 })]; // 同行，偶数行 → Right 可达
-        let result = astar_search(&body, Direction::Right, &cfg, &foods);
+        let result = astar_search(body, Direction::Right, &cfg, &foods);
         assert!(result.is_some());
         assert_ne!(result.unwrap(), Direction::Right.opposite());
     }
@@ -617,11 +578,11 @@ mod tests {
         ];
         let foods = [cfg.to_hash(Position { x: 10, y: 2 })];
 
-        let dir = astar_search(&initial_body, Direction::Right, &cfg, &foods);
+        let dir = astar_search(initial_body.clone(), Direction::Right, &cfg, &foods);
         assert!(dir.is_some());
 
         // 手动模拟几步验证
-        let mut body = initial_body.clone();
+        let mut body = initial_body;
         let mut _cur_dir = Direction::Right;
         let first_dir = dir.unwrap();
 
@@ -653,7 +614,7 @@ mod tests {
             cfg.to_hash(Position { x: 2, y: 0 }),
         ];
         let foods = [cfg.to_hash(Position { x: 5, y: 0 })]; // 同行偶数行，但前面是蛇身
-        let _result = astar_search(&body, Direction::Right, &cfg, &foods);
+        let _result = astar_search(body, Direction::Right, &cfg, &foods);
         // body[1..] 不包含 (3,0)，所以 A* 应该能找到路（偶数行 Right 直线可达）
         // 重测：构造一个真正 blocked 的场景
         // 蛇朝右，前面一堆身体挡住
@@ -666,7 +627,7 @@ mod tests {
             cfg.to_hash(Position { x: 0, y: 0 }), // head (wrap around conceptually...)
         ];
         // 正常调用不 panic 即可
-        let _ = astar_search(&blocked_body, Direction::Right, &cfg, &foods);
+        let _ = astar_search(blocked_body, Direction::Right, &cfg, &foods);
     }
 
     #[test]
