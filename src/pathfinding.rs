@@ -339,44 +339,6 @@ fn astar_search(
     best_move
 }
 
-// ============================================================================
-// BFS + flood-fill（fallback）
-// ============================================================================
-
-/// 在交规定向图上 BFS，返回 start 到每个格子的最短步数。
-///
-/// `body_idx[h]` = 格子 `h` 在蛇身（尾→头）中的索引，不在蛇身则为 `usize::MAX`。
-/// BFS 距离 `d` 对应总步数 `1+d`，原始蛇身第 `i` 节在 `i <= d` 时已被弹出，格子可用。
-fn bfs(start: usize, config: &MapConfig, body_idx: &[usize], body_len: usize) -> Vec<u32> {
-    let n = config.total_size();
-    let mut dist = vec![u32::MAX; n];
-    let head_idx = body_len.saturating_sub(1);
-
-    let mut q = VecDeque::new();
-    dist[start] = 0;
-    q.push_back(start);
-    while let Some(cur) = q.pop_front() {
-        let d = dist[cur] + 1;
-        for &dir in &traffic_dirs(config.from_hash(cur)) {
-            let nxt = match step(cur, dir, config) {
-                Some(h) => h,
-                None => continue,
-            };
-            if dist[nxt] != u32::MAX {
-                continue;
-            }
-            let bi = body_idx[nxt];
-            // 不在蛇身 / 是旧蛇头 / 已经弹出 → 可通行
-            if bi != usize::MAX && bi != head_idx && bi > d as usize {
-                continue;
-            }
-            dist[nxt] = d;
-            q.push_back(nxt);
-        }
-    }
-    dist
-}
-
 /// 空白区连通性 — 模拟一步（头占 next，尾放 body[0]）后，空白区是否保持单连通。
 ///
 /// `body_idx[h]` = 格子 `h` 在蛇身中的索引，不在蛇身则为 `usize::MAX`。
@@ -424,69 +386,19 @@ fn keeps_empty_connected(
 
 /// 返回 AI 选择的下一步方向。
 ///
-/// **双轨策略**：
-/// 1. A* 状态空间搜索（精确模拟蛇身爬行，曼哈顿启发）——优先采用
-/// 2. BFS + flood-fill（地图空间距离 + 连通性守卫）——A* 失败时 fallback
+/// **纯渐进式 A\***：交规图距离为启发函数的状态空间搜索。
+/// 找到食物返回最优路径，超 10k 状态返回 best-so-far（离食物最近的方向）。
+/// 交规保证强连通——只要不撞身就永远有路，连通性守卫在 `successors` 中保证路径质量。
 pub fn next_dir(snake: &SnakeGame) -> Option<Direction> {
     let cfg = snake.config();
-    let head = cfg.to_hash(snake.head_position()?);
     let foods = snake.food_hashes();
     if foods.is_empty() {
         return None;
     }
     let cur = snake.direction()?;
-
     let body: Vec<usize> = snake.snake_hashes().copied().collect();
-    let body_len = body.len();
-    let body_idx: Vec<usize> = {
-        let mut idx = vec![usize::MAX; cfg.total_size()];
-        for (i, &h) in body.iter().enumerate() {
-            idx[h] = i;
-        }
-        idx
-    };
 
-    // ── 主策略：A* 状态空间搜索 ──
-    if let Some(dir) = astar_search(&body, cur, cfg, foods) {
-        return Some(dir);
-    }
-
-    // ── Fallback：BFS + flood-fill ──
-    let mut best = Some(cur);
-    let mut best_total = u32::MAX;
-    let mut best_conn = false;
-
-    for &d in &traffic_dirs(cfg.from_hash(head)) {
-        if Some(d) == Some(cur.opposite()) {
-            continue;
-        }
-        let nxt = match step(head, d, cfg) {
-            Some(h) => h,
-            None => continue,
-        };
-        if body_idx[nxt] != usize::MAX {
-            continue;
-        }
-
-        let dist = bfs(nxt, cfg, &body_idx, body_len);
-        let nearest = foods.iter().map(|&f| dist[f]).min().unwrap_or(u32::MAX);
-        let total = nearest.saturating_add(1);
-        let conn = keeps_empty_connected(nxt, &body_idx, cfg);
-
-        // 优先级：连通 > 不连通；连通中选距离短的；同距保持原方向
-        let better = match (conn, best_conn) {
-            (true, false) => true,
-            (false, true) => false,
-            _ => total < best_total || (total == best_total && Some(d) == Some(cur)),
-        };
-        if better {
-            best_total = total;
-            best_conn = conn;
-            best = Some(d);
-        }
-    }
-
-    best
+    astar_search(&body, cur, cfg, foods)
 }
 
 // ============================================================================
@@ -514,12 +426,14 @@ mod tests {
     }
 
     #[test]
-    fn test_bfs_reaches_all() {
+    fn test_traffic_graph_strongly_connected() {
         let cfg = MapConfig::new(16, 16);
-        let empty_idx = vec![usize::MAX; cfg.total_size()];
-        let d = bfs(0, &cfg, &empty_idx, 0);
-        assert_eq!(d.iter().filter(|&&x| x != u32::MAX).count(), 256,
-            "even×even 交规图强连通");
+        // 交规图强连通：任意格都能到达任意格
+        // traffic_dist_map 从食物 BFS 应覆盖全图
+        let food = cfg.to_hash(Position { x: 0, y: 0 });
+        let tdist = traffic_dist_map(&[food], &cfg);
+        assert_eq!(tdist.iter().filter(|&&d| d != u32::MAX).count(), 256,
+            "16×16 even×even 交规图强连通");
     }
 
     #[test]
