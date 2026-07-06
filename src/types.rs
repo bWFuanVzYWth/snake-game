@@ -6,7 +6,7 @@ pub struct Position {
 }
 
 /// 蛇的移动方向
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Direction {
     Up,
     Down,
