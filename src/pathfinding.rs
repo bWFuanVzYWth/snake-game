@@ -155,20 +155,39 @@ impl PartialOrd for AStarNode {
     }
 }
 
-/// 曼哈顿距离：从 head 到最近食物的距离下界。
+/// 预计算：交规图上每个格子到最近食物的最短距离（忽略蛇身）。
 ///
-/// 可采纳（admissible）：交规只会增加约束，真实路径不会短于曼哈顿距离。
-/// 一致（consistent）：移动一步，曼哈顿距离变化 ≤1 ≤ 步长 1。
-fn heuristic(head_hash: usize, config: &MapConfig, foods: &[usize]) -> u32 {
-    let pos = config.from_hash(head_hash);
-    foods
-        .iter()
-        .map(|&f| {
-            let fp = config.from_hash(f);
-            pos.x.abs_diff(fp.x) + pos.y.abs_diff(fp.y)
-        })
-        .min()
-        .unwrap_or(0)
+/// BFS 从所有食物出发，沿**反向交规边**传播。
+/// 用于 A* 启发函数——比曼哈顿距离更紧，仍然是可采纳下界。
+fn traffic_dist_map(foods: &[usize], config: &MapConfig) -> Vec<u32> {
+    let n = config.total_size();
+    // 构建反向邻接表：rev_adj[j] = 所有能一步走到 j 的格子 i
+    let mut rev_adj: Vec<Vec<usize>> = vec![Vec::with_capacity(2); n];
+    for i in 0..n {
+        let pos = config.from_hash(i);
+        for &d in &traffic_dirs(pos) {
+            if let Some(j) = step(i, d, config) {
+                rev_adj[j].push(i);
+            }
+        }
+    }
+    // BFS 从食物向外传播
+    let mut dist = vec![u32::MAX; n];
+    let mut q = VecDeque::new();
+    for &f in foods {
+        dist[f] = 0;
+        q.push_back(f);
+    }
+    while let Some(cur) = q.pop_front() {
+        let d = dist[cur] + 1;
+        for &prev in &rev_adj[cur] {
+            if dist[prev] == u32::MAX {
+                dist[prev] = d;
+                q.push_back(prev);
+            }
+        }
+    }
+    dist
 }
 
 /// 从 `state` 生成所有合法后继状态。
@@ -232,6 +251,8 @@ fn successors(state: &SearchState, config: &MapConfig) -> Vec<SearchState> {
 /// A* 搜索最优路径到食物。
 ///
 /// 返回从初始状态出发的第一步方向；如果搜索超限或无解则返回 `None`。
+///
+/// 启发函数用交规图距离（忽略蛇身），比曼哈顿更紧 → 展开更少状态。
 fn astar_search(
     initial_body: &[usize],
     initial_dir: Direction,
@@ -239,6 +260,9 @@ fn astar_search(
     foods: &[usize],
 ) -> Option<Direction> {
     const MAX_EXPANDED: usize = 10_000;
+
+    // 预计算交规图距离（忽略蛇身），作为 A* 启发函数
+    let tdist = traffic_dist_map(foods, config);
 
     let initial_state = SearchState::new(initial_body.to_vec(), initial_dir);
 
@@ -253,11 +277,11 @@ fn astar_search(
         if foods.contains(&succ_head) {
             return Some(succ_dir);
         }
-        let h = heuristic(succ_head, config, foods);
+        let h = tdist[succ_head]; // 交规图距离下界（不可达时为 MAX → 不会被优先展开）
         open.push(AStarNode {
             state: succ,
             g: 1,
-            f: 1 + h,
+            f: 1u32.saturating_add(h),
             first_move: succ_dir,
         });
     }
@@ -286,12 +310,12 @@ fn astar_search(
             if foods.contains(&succ_head) {
                 return Some(node.first_move);
             }
-            let h = heuristic(succ_head, config, foods);
+            let h = tdist[succ_head];
             let g = node.g + 1;
             open.push(AStarNode {
                 state: succ,
                 g,
-                f: g + h,
+                f: g.saturating_add(h),
                 first_move: node.first_move,
             });
         }
@@ -530,23 +554,36 @@ mod tests {
     }
 
     #[test]
-    fn test_heuristic_admissible() {
+    fn test_traffic_dist_map_admissible() {
         let cfg = MapConfig::new(16, 16);
-        // 曼哈顿距离不可能超过实际步数
-        let h = heuristic(cfg.to_hash(Position { x: 5, y: 5 }), &cfg, &[cfg.to_hash(Position { x: 8, y: 10 })]);
-        assert_eq!(h, 8); // |5-8| + |5-10| = 3+5 = 8
+        let food = cfg.to_hash(Position { x: 8, y: 10 });
+        let tdist = traffic_dist_map(&[food], &cfg);
+        // 食物自身距离为 0
+        assert_eq!(tdist[food], 0);
+        // 交规图强连通 → 所有格可达
+        assert!(tdist.iter().all(|&d| d != u32::MAX),
+            "交规图上所有格都应能到达食物");
+        // 可采纳性：交规距离 ≥ 曼哈顿距离
+        let pos = Position { x: 5, y: 5 };
+        let manhattan = (pos.x.abs_diff(8) + pos.y.abs_diff(10)) as u32;
+        assert!(tdist[cfg.to_hash(pos)] >= manhattan,
+            "交规距离({})应 ≥ 曼哈顿距离({})", tdist[cfg.to_hash(pos)], manhattan);
     }
 
     #[test]
-    fn test_heuristic_multi_food() {
+    fn test_traffic_dist_map_multi_food() {
         let cfg = MapConfig::new(16, 16);
         let foods = [
             cfg.to_hash(Position { x: 10, y: 10 }),
             cfg.to_hash(Position { x: 3, y: 2 }),
         ];
-        let h = heuristic(cfg.to_hash(Position { x: 0, y: 0 }), &cfg, &foods);
-        // 到 (3,2): 5; 到 (10,10): 20 → min = 5
-        assert_eq!(h, 5);
+        let tdist = traffic_dist_map(&foods, &cfg);
+        // 所有食物距离为 0
+        for &f in &foods {
+            assert_eq!(tdist[f], 0);
+        }
+        // 交规图强连通 → 所有格可达
+        assert!(tdist.iter().all(|&d| d != u32::MAX));
     }
 
     #[test]
