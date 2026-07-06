@@ -192,44 +192,25 @@ fn traffic_dist_map(foods: &[usize], config: &MapConfig) -> Vec<u32> {
 
 /// 从 `state` 生成所有合法后继状态。
 ///
-/// 每步需满足三个约束：
-/// 1. 交规方向（不 180° 掉头、不出界）
-/// 2. 碰撞检测（不能撞到身体任何部分，包括蛇尾——游戏先检测碰撞再弹尾）
-/// 3. 连通性守卫（走完后空白区不能割裂成两块）
+/// 每步三个约束：交规 → 不撞身 → 连通性守卫。
 fn successors(state: &SearchState, config: &MapConfig) -> Vec<SearchState> {
     let head = state.head();
     let head_pos = config.from_hash(head);
     let mut result = Vec::with_capacity(2);
-
-    // 构建 body_idx 用于连通性检查（flood-fill 需要）
-    let n = config.total_size();
-    let mut body_idx = vec![usize::MAX; n];
-    for (i, &h) in state.body.iter().enumerate() {
-        body_idx[h] = i;
-    }
+    let tail = state.body[0]; // 将被释放的尾
 
     for &d in &traffic_dirs(head_pos) {
-        if d == state.dir.opposite() {
-            continue;
-        }
+        if d == state.dir.opposite() { continue; }
         let new_head = match step(head, d, config) {
-            Some(h) => h,
-            None => continue,
+            Some(h) => h, None => continue,
         };
+        if state.mask.contains(new_head) { continue; }
 
-        // 碰撞检测：游戏先检测碰撞再弹尾，所以尾也是障碍物
-        if state.mask.contains(new_head) {
-            continue;
-        }
+        // 连通性守卫（bitmask 版，零分配）
+        if !keeps_empty_connected(new_head, &state.mask, tail, config) { continue; }
 
-        // 连通性守卫：走这步后空白区不能割裂
-        if !keeps_empty_connected(new_head, &body_idx, config) {
-            continue;
-        }
-
-        // 弹尾 + 压头
         let mut mask = state.mask.clone();
-        mask.remove(state.body[0]);
+        mask.remove(tail);
         mask.insert(new_head);
 
         let new_body = {
@@ -238,13 +219,8 @@ fn successors(state: &SearchState, config: &MapConfig) -> Vec<SearchState> {
             b
         };
 
-        result.push(SearchState {
-            body: new_body,
-            dir: d,
-            mask,
-        });
+        result.push(SearchState { body: new_body, dir: d, mask });
     }
-
     result
 }
 
@@ -339,45 +315,85 @@ fn astar_search(
     best_move
 }
 
-/// 空白区连通性 — 模拟一步（头占 next，尾放 body[0]）后，空白区是否保持单连通。
+/// 空白区连通性 — 模拟一步（尾释放 `tail`，头占据 `new_head`）后，空白区是否单连通。
 ///
-/// `body_idx[h]` = 格子 `h` 在蛇身中的索引，不在蛇身则为 `usize::MAX`。
-/// 索引 0 是蛇尾，走一步后会被释放。
+/// 全栈上操作，零堆分配：bitmask 记录空格/访问状态，固定数组做 BFS 栈。
 fn keeps_empty_connected(
-    next: usize, body_idx: &[usize], cfg: &MapConfig,
+    new_head: usize, body_mask: &BodyMask, tail: usize, config: &MapConfig,
 ) -> bool {
-    let n = cfg.total_size();
-    let mut open = vec![false; n];
-    let mut start = None;
-    for i in 0..n {
-        // 不在蛇身 或 是蛇尾（即将释放）→ 空格；且不能是新头位置
-        if (body_idx[i] == usize::MAX || body_idx[i] == 0) && i != next {
-            open[i] = true;
-            start = Some(i);
-        }
-    }
+    let w = config.width as usize;
+    let h = config.height as usize;
+
+    // 构建空位 bitmask：!body | tail & !new_head
+    let mut empty = [!body_mask.0[0], !body_mask.0[1], !body_mask.0[2], !body_mask.0[3]];
+    empty[tail / 64] |= 1u64 << (tail % 64);
+    empty[new_head / 64] &= !(1u64 << (new_head % 64));
+
+    // 找第一个空格作为 BFS 起点
+    let start = empty.iter()
+        .position(|&w| w != 0)
+        .map(|i| i * 64 + empty[i].trailing_zeros() as usize);
     let start = match start {
         Some(s) => s,
         None => return true, // 无空格
     };
 
-    // 4-方向 flood-fill
-    let mut stack = vec![start];
-    let mut seen = vec![false; n];
-    seen[start] = true;
-    let mut cnt = 1;
-    while let Some(cur) = stack.pop() {
-        for &d in &[Direction::Right, Direction::Left, Direction::Up, Direction::Down] {
-            if let Some(nbr) = step(cur, d, cfg) {
-                if open[nbr] && !seen[nbr] {
-                    seen[nbr] = true;
-                    stack.push(nbr);
-                    cnt += 1;
-                }
+    let mut stack = [0usize; 256];
+    let mut sp = 0u16;
+    let mut seen = [0u64; 4];
+
+    seen[start / 64] |= 1u64 << (start % 64);
+    stack[sp as usize] = start;
+    sp += 1;
+
+    while sp > 0 {
+        sp -= 1;
+        let cur = stack[sp as usize];
+        let cx = cur % w;
+        let cy = cur / w;
+
+        // 展开 4 个方向（内联边界检查，无函数调用）
+        // Right
+        if cx + 1 < w {
+            let n = cur + 1;
+            if (empty[n / 64] >> (n % 64)) & 1 != 0 && (seen[n / 64] >> (n % 64)) & 1 == 0 {
+                seen[n / 64] |= 1u64 << (n % 64);
+                stack[sp as usize] = n;
+                sp += 1;
+            }
+        }
+        // Left
+        if cx > 0 {
+            let n = cur - 1;
+            if (empty[n / 64] >> (n % 64)) & 1 != 0 && (seen[n / 64] >> (n % 64)) & 1 == 0 {
+                seen[n / 64] |= 1u64 << (n % 64);
+                stack[sp as usize] = n;
+                sp += 1;
+            }
+        }
+        // Down
+        if cy + 1 < h {
+            let n = cur + w;
+            if (empty[n / 64] >> (n % 64)) & 1 != 0 && (seen[n / 64] >> (n % 64)) & 1 == 0 {
+                seen[n / 64] |= 1u64 << (n % 64);
+                stack[sp as usize] = n;
+                sp += 1;
+            }
+        }
+        // Up
+        if cy > 0 {
+            let n = cur - w;
+            if (empty[n / 64] >> (n % 64)) & 1 != 0 && (seen[n / 64] >> (n % 64)) & 1 == 0 {
+                seen[n / 64] |= 1u64 << (n % 64);
+                stack[sp as usize] = n;
+                sp += 1;
             }
         }
     }
-    cnt == open.iter().filter(|&&x| x).count()
+
+    let empty_cnt = empty[0].count_ones() + empty[1].count_ones() + empty[2].count_ones() + empty[3].count_ones();
+    let seen_cnt = seen[0].count_ones() + seen[1].count_ones() + seen[2].count_ones() + seen[3].count_ones();
+    seen_cnt == empty_cnt
 }
 
 // ============================================================================
