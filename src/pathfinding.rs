@@ -270,6 +270,10 @@ fn astar_search(
     let mut closed = HashSet::with_capacity(1024);
     let mut expanded: usize = 0;
 
+    // 渐进式：跟踪搜索到的最接近食物的状态
+    let mut best_h: u32 = u32::MAX;
+    let mut best_move: Option<Direction> = None;
+
     // 从初始状态展开一步，每个后继的方向就是第一步方向
     for succ in successors(&initial_state, config) {
         let succ_head = succ.head();
@@ -277,7 +281,8 @@ fn astar_search(
         if foods.contains(&succ_head) {
             return Some(succ_dir);
         }
-        let h = tdist[succ_head]; // 交规图距离下界（不可达时为 MAX → 不会被优先展开）
+        let h = tdist[succ_head];
+        if h < best_h { best_h = h; best_move = Some(succ_dir); }
         open.push(AStarNode {
             state: succ,
             g: 1,
@@ -292,8 +297,17 @@ fn astar_search(
             continue;
         }
         expanded += 1;
+
+        // 更新 best-so-far（在 f = g+h 的展开顺序中，这是当前最优的下界估计）
+        let node_h = tdist[node.state.head()];
+        if node_h < best_h {
+            best_h = node_h;
+            best_move = Some(node.first_move);
+        }
+
         if expanded > MAX_EXPANDED {
-            return None; // 超限，触发 fallback
+            // 渐进式 fallback：返回搜索到的最优方向
+            return best_move;
         }
 
         // 目标检测
@@ -321,7 +335,8 @@ fn astar_search(
         }
     }
 
-    None // 无解
+    // open set 耗尽：返回最佳近似方向，或降级到 BFS fallback
+    best_move
 }
 
 // ============================================================================
